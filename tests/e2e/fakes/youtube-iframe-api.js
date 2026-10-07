@@ -4,6 +4,9 @@
 (function () {
   function Player(el, opts) {
     var events = (opts && opts.events) || {};
+    // youtube-video-element hands over its own embed iframe instead of a video id.
+    var videoId = (opts && opts.videoId) || ((el.src || "").match(/embed\/([\w-]{11})/) || [])[1];
+    var listeners = {};
     var v = document.createElement("video");
     v.dataset.testid = "video";
     v.dataset.fake = "youtube";
@@ -16,8 +19,9 @@
     function emit(s) {
       state = s;
       if (events.onStateChange) events.onStateChange({ data: s, target: api });
+      (listeners.onStateChange || []).forEach(function (fn) { fn({ data: s, target: api }); });
     }
-    if (opts.videoId === "unembeddabl") {
+    if (videoId === "unembeddabl") {
       setTimeout(function () {
         if (events.onError) events.onError({ data: 150 });
       }, 50);
@@ -49,12 +53,21 @@
       setVolume: function (n) { v.volume = n / 100; },
       mute: function () { v.muted = true; },
       unMute: function () { v.muted = false; },
+      addEventListener: function (name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
+      getOption: function () { return []; },
+      setOption: function () {},
+      getVideoLoadedFraction: function () {
+        return v.duration && v.buffered.length ? v.buffered.end(v.buffered.length - 1) / v.duration : 0;
+      },
+      getVolume: function () { return v.volume * 100; },
+      isMuted: function () { return v.muted; },
       destroy: function () { v.removeAttribute("src"); v.load(); v.remove(); },
     };
-    var shell = { destroy: api.destroy };
+    // addEventListener and destroy exist before ready on the real API too.
+    var shell = { destroy: api.destroy, addEventListener: api.addEventListener };
     return shell;
   }
-  window.YT = { Player: Player };
+  window.YT = { Player: Player, PlayerState: { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 } };
   setTimeout(function () {
     if (window.onYouTubeIframeAPIReady) window.onYouTubeIframeAPIReady();
   }, 0);

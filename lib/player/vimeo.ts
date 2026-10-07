@@ -2,8 +2,7 @@ import type { MediaSource, SourceKind } from "@/lib/room/types";
 import { NOT_DIRECT_MESSAGE } from "@/lib/media/source";
 import { Emitter, notAllowed, type PlayerAdapter, type PlayerListener } from "@/lib/player/types";
 import { PositionClock, loadScript } from "@/lib/player/script";
-import { clickShield } from "@/lib/player/youtube";
-import type { PlayerOptions } from "@/lib/player/html5";
+import { clickShield, type PlayerOptions } from "@/lib/player/media-element";
 
 /** The subset of the official Vimeo Player SDK we use. */
 type VimeoPlayer = {

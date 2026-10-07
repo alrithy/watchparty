@@ -397,7 +397,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
     let correcting = false;
     let canNudgeRate = true;
     let lastSeekAt = 0;
-    // Seeks on slow sources land behind (the player loads before resuming); learn by how much.
+    // Seeks land off target (slow sources behind, instant ones ahead of the lead); learn by how much.
     let extraLead = 0;
     let measureLanding = false;
     let retried = false;
@@ -445,7 +445,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
         if (measureLanding) {
           measureLanding = false;
           if (Math.abs(d) > DRIFT_IGNORE) {
-            extraLead = Math.min(MAX_EXTRA_LEAD, Math.max(0, extraLead - d));
+            extraLead = Math.min(MAX_EXTRA_LEAD, Math.max(-p.seekLead, extraLead - d));
             // One immediate retry with the learned lead instead of a long rate nudge.
             if (!retried) {
               retried = true;
