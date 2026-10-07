@@ -758,9 +758,11 @@ test("Movi failures say why: blocked byte-range access, or a missing file", asyn
   const noCors = process.env.E2E_BASE_URL ? process.env.E2E_NOCORS_URL : "http://127.0.0.1:3100/__test__/clip.avi?sig=abc";
   if (noCors) {
     await paste(page, noCors);
-    // The link has no redirect to skip, so the resolver finds the file's own server refusing the page.
+    // Locally the link has no redirect; live (archive.org) the hop and the file's server both lack
+    // CORS. Either way the resolver finds the final server refusing the page, and names it.
+    const finalHost = process.env.E2E_BASE_URL ? "[\\w.-]+" : "127\\.0\\.0\\.1";
     await expect(page.getByTestId("media-error")).toHaveText(
-      `The video's server (${new URL(noCors).hostname}) blocks browser streaming of this format. On desktop Chrome, Edge or Brave, the WatchParty CORS Unlocker extension fixes this; phone browsers can't play this link.`,
+      new RegExp(`^The video's server \\(${finalHost}\\) blocks browser streaming of this format\\. On desktop Chrome, Edge or Brave, the WatchParty CORS Unlocker extension fixes this; phone browsers can't play this link\\.$`),
       { timeout: 40_000 },
     );
     expect(await page.evaluate(() => (window as unknown as { __watchparty: { player(): { failureReason?(): string | null } } }).__watchparty.player().failureReason?.())).toBe(
@@ -896,4 +898,31 @@ test.describe("redirect resolver", () => {
       await ctx.close();
     }
   });
+});
+
+/**
+ * Deployed runs: a real redirect whose hop sends no CORS while the file's server does
+ * (E2E_REDIRECT_URL, e.g. a github.com/.../raw/... MKV that lands on raw.githubusercontent.com).
+ */
+test("live: a redirect hop without CORS plays on the final URL and the guest follows", async ({ browser, context }) => {
+  const link = process.env.E2E_REDIRECT_URL;
+  test.skip(!process.env.E2E_BASE_URL || !link, "needs E2E_REDIRECT_URL on a deployed run");
+  const host = await context.newPage();
+  const resolved: unknown[] = [];
+  host.on("response", async (r) => {
+    if (r.url().endsWith("/api/media/resolve")) resolved.push(await r.json().catch(() => null));
+  });
+  const roomUrl = await hostRoom(host, link!);
+  await expect(host.locator('[data-provider="movi"]')).toHaveCount(1);
+  expect(resolved).toEqual([expect.objectContaining({ ok: true, redirected: true, supportsRange: true })]);
+  console.log(`live resolver: ${new URL(link!).hostname} -> ${new URL((resolved[0] as { finalUrl: string }).finalUrl).hostname}`);
+  const guest = await guestPage(browser, context);
+  await guest.goto(roomUrl);
+  await expect(guest.locator('[data-provider="movi"]')).toHaveCount(1, { timeout: 30_000 });
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 30_000 });
+  await host.getByTestId("movi-play").click();
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 15_000 }).toBe(false);
+  await act(host, { seek: 40 });
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] }).toBeLessThan(0.4);
+  console.log(`live resolver: seek gap ${(await gap(host, guest)).toFixed(3)}s`);
 });
