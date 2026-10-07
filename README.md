@@ -24,9 +24,9 @@ The app works out the source type; nobody picks a mode.
 | Source | Detected by | Player |
 | --- | --- | --- |
 | MP4, WebM, MOV, MKV, audio files | file extension | native `<video>` |
-| HLS | `.m3u8` | native HLS (Safari/iOS) or hls.js |
-| MPEG-DASH | `.mpd` | dash.js (loaded only for DASH) |
-| YouTube | youtube.com / youtu.be / shorts / embed / live links | official IFrame Player API |
+| HLS | `.m3u8` | `hls-video-element` (hls.js; native HLS on Safari/iOS) |
+| MPEG-DASH | `.mpd` | `dash-video-element` (dash.js, loaded only for DASH) |
+| YouTube | youtube.com / youtu.be / shorts / embed / live links | `youtube-video-element` (official IFrame Player API) |
 | Vimeo | vimeo.com / player.vimeo.com links (incl. unlisted hash) | official Vimeo Player SDK |
 | Final CDN/download URLs (Real-Debrid, Torrentio, Nuvio, ...) | extension, else server probe | whichever of the above fits |
 
@@ -38,10 +38,11 @@ and if it can't tell, the HTML5 player simply tries. Video bytes never pass thro
 
 **Players** (`lib/player/`) all implement one `PlayerAdapter` interface
 (`load, play, pause, seek, currentTime, duration, playing, destroy`, plus a few
-status getters and a uniform event stream). `Html5PlayerAdapter`,
-`HlsPlayerAdapter`, `DashPlayerAdapter`, `YouTubePlayerAdapter` and
-`VimeoPlayerAdapter` translate their provider's API into those events, and the
-sync engine (`components/useWatchParty.ts`) only talks to the interface.
+status getters and a uniform event stream). Files, HLS, DASH and YouTube go
+through one `MediaElementAdapter` over the media-element web components that
+react-player 3 is built on; Vimeo uses a thin wrapper over the official Player
+SDK. The sync engine (`components/useWatchParty.ts`) only talks to the
+interface. Library choices and licenses: [docs/OSS_REUSE_AUDIT.md](docs/OSS_REUSE_AUDIT.md).
 Providers without fine-grained playback rates (YouTube; Vimeo on basic accounts)
 correct drift by seeking only, with a 0.6 s dead band.
 
@@ -52,6 +53,17 @@ YouTube/Vimeo player that never becomes ready within 20 s (for example YouTube's
 "confirm you're not a bot" check, which it shows to datacenter IPs). Media the
 browser can't decode shows "This source is not browser compatible." There is no
 DRM bypass, server-side download or transcoding.
+
+## Subtitles
+
+The host uploads a `.srt` or `.vtt` file or pastes a subtitle link (links the
+browser can't fetch because of CORS go through `POST /api/subtitles`, capped at
+2 MB). SRT is parsed by srt-parser-2 and WebVTT by the browser's own parser;
+Windows-1256 Arabic files are decoded too. The file travels to guests in the
+room snapshot (deflated), so late joiners get it. Cues are drawn over the player,
+so they work over YouTube/Vimeo as well, right-to-left where the text is. The
+host's delay (±0.5 s steps) applies to everyone; show/hide is per viewer.
+**Fullscreen** under the player keeps the subtitles visible.
 
 The Milestone 3 Host Real-Debrid code (`lib/realdebrid/`, `POST /api/resolve`) is
 kept isolated but is not part of the UI; it does nothing unless `REAL_DEBRID_TOKEN` is set.

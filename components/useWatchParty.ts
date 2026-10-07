@@ -90,6 +90,8 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
   const driftRef = useRef<number | null>(null);
   // Host reload: seek/resume to the saved state once metadata is available.
   const restorePendingRef = useRef(Boolean(restored?.media && restored?.state));
+  /** The event that ends a host-reload restore ("playing", or "seeked" when paused). */
+  const restoreAwaitRef = useRef<"playing" | "seeked" | null>(null);
 
   const persist = useCallback(() => {
     if (!isHost) return;
@@ -176,6 +178,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
     (source: MediaSource) => {
       if (!isHost) return;
       restorePendingRef.current = false;
+      restoreAwaitRef.current = null;
       mediaRef.current = source;
       setMedia(source);
       // Subtitles belong to the previous video.
@@ -357,11 +360,12 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
           if (p.canContinue() && !p.error()) updateStatus("ready");
           break;
         case "ready":
-          // Host reload: resume where the room should be.
-          if (isHost && restorePendingRef.current && stateRef.current) {
+          // Host reload: resume where the room should be. Publishing waits until the
+          // restore lands, so guests keep playing instead of pausing for the seek.
+          if (isHost && restorePendingRef.current && stateRef.current && !restoreAwaitRef.current) {
             const s = stateRef.current;
+            restoreAwaitRef.current = s.playing ? "playing" : "seeked";
             p.seek(expectedPosition(s, clockRef.current.now(), p.duration()));
-            restorePendingRef.current = false;
             if (s.playing) tryPlay(p);
           }
           break;
@@ -369,6 +373,10 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
           setFailure({ key, message: detail?.message ?? "Playback failed." });
           updateStatus("error");
           break;
+      }
+      if (isHost && restorePendingRef.current && restoreAwaitRef.current === e) {
+        restorePendingRef.current = false;
+        restoreAwaitRef.current = null;
       }
       if (isHost && !restorePendingRef.current && (e === "play" || e === "pause" || e === "seeked" || e === "playing")) {
         publishState();
