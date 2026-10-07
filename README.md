@@ -47,7 +47,9 @@ correct drift by seeking only, with a 0.6 s dead band.
 
 **Can't be played directly:** web pages, DRM-protected media, private or
 embed-disabled YouTube/Vimeo videos, playlists/channels, non-http(s) links, and
-links that need a login show "This source can't be played directly." Media the
+links that need a login show "This source can't be played directly." So does a
+YouTube/Vimeo player that never becomes ready within 20 s (for example YouTube's
+"confirm you're not a bot" check, which it shows to datacenter IPs). Media the
 browser can't decode shows "This source is not browser compatible." There is no
 DRM bypass, server-side download or transcoding.
 

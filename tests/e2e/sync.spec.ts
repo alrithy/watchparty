@@ -472,6 +472,11 @@ test("switching source types in the same room", async ({ browser, context }) => 
     await act(host, "play");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
     await host.waitForTimeout(3000);
+    console.log(`switch -> ${src.name} gap at 3s: ${(await gap(host, guest)).toFixed(3)}s`);
+    // Remote streams with long segments can start a little apart; the guest must converge.
+    await expect
+      .poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] })
+      .toBeLessThan(tolerance(src.kind));
     const g = await gap(host, guest);
     console.log(`switch -> ${src.name} gap: ${g.toFixed(3)}s`);
     expect(Math.abs(g)).toBeLessThan(tolerance(src.kind));
