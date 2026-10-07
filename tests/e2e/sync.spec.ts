@@ -196,7 +196,8 @@ test("host and guest stay in sync across play, pause, seek, drift and reloads", 
   // Minor drift: guest jumps 0.45s ahead -> playbackRate correction, no seek.
   // (Past ~0.5s with the target buffered, the guest seeks instead; see "Major drift" below.)
   await video(guest).evaluate((v: HTMLVideoElement) => (v.currentTime += 0.45));
-  await expect.poll(async () => (await info(guest)).rate, { timeout: 2000 }).toBeLessThan(1);
+  // Over a real network the measured drift varies, so only the local run can insist on the rate path.
+  if (!process.env.E2E_BASE_URL) await expect.poll(async () => (await info(guest)).rate, { timeout: 2000 }).toBeLessThan(1);
   await expect
     .poll(async () => Math.abs(await gap(host, guest)), { timeout: 30_000, intervals: [500] })
     .toBeLessThan(0.35);
