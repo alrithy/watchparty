@@ -87,39 +87,41 @@ type Adapter = {
   seek(s: number): void;
 };
 
+/**
+ * Reads the page's <video> when there is one; otherwise (Movi draws on a canvas, or the player is
+ * mid-way through switching decoders) the active adapter. Decided in one evaluate, so an element
+ * that's torn down between checks can't leave the test waiting on it.
+ */
 const info = (page: Page): Promise<VideoInfo> =>
-  VIA_ADAPTER
-    ? page.evaluate(() => {
-        const p = (window as unknown as { __watchparty?: { player(): Adapter | null } }).__watchparty?.player();
-        if (!p) return { t: 0, paused: true, rate: 1, ready: 0 };
-        return { t: p.currentTime(), paused: !p.playing(), rate: p.rate(), ready: p.ready() ? (p.canContinue() ? 4 : 1) : 0 };
-      })
-    : page.locator('[data-testid="video"]').evaluate((v: HTMLVideoElement): VideoInfo => ({
-        t: v.currentTime,
-        paused: v.paused,
-        rate: v.playbackRate,
-        ready: v.readyState,
-      }));
+  page.evaluate((via) => {
+    const v = document.querySelector<HTMLVideoElement>('[data-testid="video"]');
+    if (!via && v) return { t: v.currentTime, paused: v.paused, rate: v.playbackRate, ready: v.readyState };
+    const p = (window as unknown as { __watchparty?: { player(): Adapter | null } }).__watchparty?.player();
+    if (!p) return { t: 0, paused: true, rate: 1, ready: 0 };
+    return { t: p.currentTime(), paused: !p.playing(), rate: p.rate(), ready: p.ready() ? (p.canContinue() ? 4 : 1) : 0 };
+  }, VIA_ADAPTER);
 
 /** Play/pause/seek like a person using the player's own controls. */
 async function act(page: Page, action: "play" | "pause" | { seek: number } | { nudge: number }) {
-  if (VIA_ADAPTER) {
-    await page.evaluate((a) => {
+  await page.evaluate(
+    ([a, via]) => {
+      const v = document.querySelector<HTMLVideoElement>('[data-testid="video"]');
+      if (!via && v) {
+        if (a === "play") void v.play();
+        else if (a === "pause") v.pause();
+        else if ("seek" in a) v.currentTime = a.seek;
+        else v.currentTime += a.nudge;
+        return;
+      }
       const p = (window as unknown as { __watchparty?: { player(): Adapter | null } }).__watchparty?.player();
       if (!p) throw new Error("no player");
       if (a === "play") void p.play().catch(() => {});
       else if (a === "pause") p.pause();
       else if ("seek" in a) p.seek(a.seek);
       else p.seek(p.currentTime() + a.nudge);
-    }, action);
-    return;
-  }
-  await page.locator('[data-testid="video"]').evaluate((v: HTMLVideoElement, a) => {
-    if (a === "play") void v.play();
-    else if (a === "pause") v.pause();
-    else if ("seek" in a) v.currentTime = a.seek;
-    else v.currentTime += a.nudge;
-  }, action);
+    },
+    [action, VIA_ADAPTER] as const,
+  );
 }
 
 /** Sample both tabs back to back and return host - guest. */
@@ -234,12 +236,14 @@ test("unsupported sources show a clear compatibility error", async ({ page }) =>
   await page.getByTestId("create-room").click();
   await page.waitForURL(/\/room\//);
   // An image: the probe can't vouch for it, so the HTML5 player tries and fails to decode it.
+  // CORS is allowed so the Movi fallback can read it too: both decoders must refuse it.
   await page.route("https://files.example.test/clip", (route) =>
-    route.fulfill({ body: "GIF89a", headers: { "Content-Type": "application/octet-stream" } }),
+    route.fulfill({ body: "GIF89a", headers: { "Content-Type": "application/octet-stream", "Access-Control-Allow-Origin": "*" } }),
   );
   await page.getByTestId("source-url").fill("https://files.example.test/clip");
   await page.getByTestId("load-source").click();
-  await expect(page.getByTestId("media-error")).toHaveText(/This source is not browser compatible\./);
+  // Both decoders get to try first (the fallback one loads on demand).
+  await expect(page.getByTestId("media-error")).toHaveText(/This source is not browser compatible\./, { timeout: 20_000 });
 });
 
 test("guest blocked by autoplay policy gets a join button", async ({ context }) => {
@@ -273,12 +277,12 @@ test("guest blocked by autoplay policy gets a join button", async ({ context }) 
 });
 
 /** Host creates a room with the test clip loaded; returns the room path. */
-async function hostRoom(host: Page) {
+async function hostRoom(host: Page, clip = CLIP) {
   await host.goto("/");
   await host.getByTestId("create-room").click();
   await host.waitForURL(/\/room\//);
   await expectTransport(host);
-  await host.getByTestId("source-url").fill(new URL(CLIP, host.url()).toString());
+  await host.getByTestId("source-url").fill(new URL(clip, host.url()).toString());
   await host.getByTestId("load-source").click();
   await expect.poll(async () => (await info(host)).ready).toBeGreaterThanOrEqual(3);
   return new URL(host.url()).pathname;
@@ -353,6 +357,12 @@ test("pause for everyone while a guest buffers", async ({ context }) => {
 // ---------- Paste-and-play: every source type through the same sync engine ----------
 
 /** E2E_LIVE_SOURCES=1 swaps the local fixtures for public media (needs open internet). */
+/** Played by Movi: MKV straight away, the extensionless HEVC download after <video> fails on it. */
+const MOVI_SOURCES = [
+  { name: "MKV H.264 + AC-3", url: "/__test__/clip.mkv", kind: "file", engine: "movi" },
+  { name: "HEVC Main10 + E-AC-3 without extension", url: "/__test__/download-hevc", kind: "file", engine: "movi" },
+] as const;
+
 const LIVE_SOURCES = [
   { name: "MP4", url: "https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4", kind: "file" },
   { name: "HLS", url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8", kind: "hls" },
@@ -366,6 +376,8 @@ const LIVE_SOURCES = [
   { name: "YouTube", url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", kind: "youtube" },
   { name: "Vimeo", url: "https://vimeo.com/1084537", kind: "vimeo" },
   { name: "WebM", url: "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.360p.vp9.webm", kind: "file" },
+  // Served from the test machine (see prepareContext) on deployed runs too.
+  ...MOVI_SOURCES,
 ] as const;
 
 const FIXTURE_SOURCES = [
@@ -375,6 +387,7 @@ const FIXTURE_SOURCES = [
   { name: "generic CDN URL without extension", url: "/__test__/download", kind: "file" },
   { name: "YouTube", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", kind: "youtube" },
   { name: "Vimeo", url: "https://vimeo.com/1084537", kind: "vimeo" },
+  ...MOVI_SOURCES,
 ] as const;
 
 const SOURCES = process.env.E2E_LIVE_SOURCES ? LIVE_SOURCES : FIXTURE_SOURCES;
@@ -408,6 +421,9 @@ for (const src of SOURCES) {
     await guest.goto(new URL(host.url()).pathname);
     await expectTransport(guest);
     await expect(guest.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
+    if ("engine" in src) {
+      for (const page of [host, guest]) await expect(page.locator('[data-provider="movi"]')).toHaveCount(1, { timeout: 20_000 });
+    }
     await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
 
     // Play (for YouTube/Vimeo this drives the provider's own player, like its play button).
@@ -468,15 +484,17 @@ test("switching source types in the same room", async ({ browser, context }) => 
   await guest.goto(new URL(host.url()).pathname);
   await expectTransport(guest);
 
-  // Live runs come from datacenter IPs, where real YouTube/Vimeo refuse to play; switch across the
-  // five direct source types there instead.
-  const order = process.env.E2E_LIVE_SOURCES ? [0, 1, 2, 6, 3] : [0, 4, 1, 5, 2];
+  // MKV (Movi) -> YouTube -> MP4 -> MKV, then the stream types. Live runs come from datacenter IPs,
+  // where real YouTube/Vimeo refuse to play; they switch across the direct source types instead.
+  const order = process.env.E2E_LIVE_SOURCES ? [7, 0, 7, 1, 2, 6, 3] : [6, 4, 0, 6, 1, 5, 2];
   for (const src of order.map((i) => SOURCES[i])) {
     await paste(host, src.url);
     await expect(host.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
     await expect(guest.getByTestId("stage")).toHaveAttribute("data-kind", src.kind, { timeout: 10_000 });
     // Exactly one player per page: the previous adapter was torn down.
-    const players = VIA_ADAPTER ? '[data-testid="video"], [data-testid="provider-player"]' : '[data-testid="video"]';
+    const players = VIA_ADAPTER
+      ? '[data-testid="video"], [data-testid="provider-player"]'
+      : '[data-testid="video"], [data-provider="movi"]';
     await expect(host.locator(players)).toHaveCount(1, { timeout: 10_000 });
     await expect(guest.locator(players)).toHaveCount(1, { timeout: 10_000 });
     await expect.poll(async () => (await info(host)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
@@ -663,4 +681,77 @@ test("subtitles: Find Arabic subtitles asks when unsure, applies a confident mat
   // Manual subtitles and the shared delay still work alongside it.
   await host.getByTestId("subtitle-later").click();
   await expect(guest.getByTestId("subtitle-offset")).toHaveText("+0.5s");
+});
+
+// ---------- Movi: MKV/HEVC fallback ----------
+
+test("MKV: a 45-minute seek, pause and play after it, and the guest follows", async ({ browser, context }) => {
+  const host = await context.newPage();
+  const roomUrl = await hostRoom(host, "/__test__/long.mkv");
+  await expect(host.locator('[data-provider="movi"]')).toHaveCount(1);
+  expect(await host.evaluate(() => (window as unknown as { __watchparty: { player(): { duration(): number } } }).__watchparty.player().duration())).toBeGreaterThan(3500);
+  const guest = await guestPage(browser, context);
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+
+  // The host drives Movi with our own small control bar (a canvas has no native controls).
+  await host.getByTestId("movi-play").click();
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+  await act(host, { seek: 45 * 60 });
+  await expect.poll(async () => (await info(guest)).t, { timeout: 15_000 }).toBeGreaterThan(45 * 60);
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] }).toBeLessThan(0.4);
+  console.log(`MKV 45-min seek gap: ${(await gap(host, guest)).toFixed(3)}s`);
+
+  await act(host, "pause");
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 5000 }).toBe(true);
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 5000 }).toBeLessThan(0.3);
+  console.log(`MKV pause after seek gap: ${(await gap(host, guest)).toFixed(3)}s`);
+  await act(host, "play");
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+  await host.waitForTimeout(3000);
+  const g = await gap(host, guest);
+  console.log(`MKV play after seek gap: ${g.toFixed(3)}s`);
+  expect(Math.abs(g)).toBeLessThan(0.4);
+  expect((await info(host)).t).toBeGreaterThan(45 * 60 + 2);
+});
+
+test("MKV: subtitles overlay and delay work on Movi", async ({ browser, context }) => {
+  const host = await context.newPage();
+  const roomUrl = await hostRoom(host, "/__test__/clip.mkv");
+  await expect(host.locator('[data-provider="movi"]')).toHaveCount(1);
+  const guest = await guestPage(browser, context);
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+  await act(host, { seek: 5 });
+  for (const page of [host, guest]) {
+    await expect(page.getByTestId("subtitle-text").locator("p")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+  }
+  await act(host, { seek: 10.2 });
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("Second line", { timeout: 10_000 });
+  await host.getByTestId("subtitle-later").click();
+  await expect(guest.getByTestId("subtitle-offset")).toHaveText("+0.5s");
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+});
+
+test("Movi failures say why: blocked byte-range access, or a missing file", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("create-room").click();
+  await page.waitForURL(/\/room\//);
+
+  // Another origin that serves the bytes (with Range) but no CORS headers: <video> may load it,
+  // Movi may not read it. Locally that's the same server under 127.0.0.1; deployed runs need a
+  // public link of that kind in E2E_NOCORS_URL (an AVI/MKV the browser itself can't decode).
+  const noCors = process.env.E2E_BASE_URL ? process.env.E2E_NOCORS_URL : "http://127.0.0.1:3100/__test__/clip.avi?sig=abc";
+  if (noCors) {
+    await paste(page, noCors);
+    await expect(page.getByTestId("media-error")).toHaveText(
+      "This link blocks browser byte-range access, so this format can't be streamed here.",
+      { timeout: 30_000 },
+    );
+  }
+
+  await paste(page, "/__test__/missing.mkv");
+  await expect(page.getByTestId("media-error")).toHaveText("The video link wasn't found. It may have expired.", { timeout: 30_000 });
 });

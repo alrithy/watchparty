@@ -56,3 +56,22 @@ Licenses checked from each repository's LICENSE file and npm metadata on 2026-10
 - Not Arabic: minus half the maximum score. Hearing impaired when not asked for: minus 9. Machine translated: minus 18.
 - Downloads, rating and trusted uploader only break ties (always worth under 1 point).
 - **Confidence:** a result is applied automatically only when it matches the exact release name, the IMDb id, title + year (movie), or series + season + episode, in Arabic, without a year mismatch. Otherwise the host sees the top five with their reasons and picks.
+
+## Advanced direct-media fallback (2026-10-07)
+
+| Package | Version | License | Reuse method | Use |
+| --- | --- | --- | --- | --- |
+| movi-player | 0.4.1 | Apache-2.0 | npm dependency | advanced direct-media fallback |
+
+- Used through its headless `movi-player/player` entry (`MoviPlayer`), lazy-loaded by
+  `lib/player/movi.ts`. No Movi source is copied; its UI element, subtitle system and
+  ambient mode are not used. Its `LICENSE` ships with the package (no NOTICE file).
+- Spiked first (30 minutes) on generated MKV H.264/AAC, HEVC + AC-3, HEVC Main10 + E-AC-3,
+  4K HEVC Main10, TrueHD, DTS, MPEG-TS, M2TS and AVI files, and a one-hour 706 MB MKV:
+  all opened and seeked; the hour-long file read ~70 MB around each position, never the whole file.
+- Considered only if Movi had failed the spike: brianhvo02/libmpv-wasm, MediaBunny.
+  Raw ffmpeg.wasm transcoding of whole movies was ruled out.
+- Later, for links that block cross-origin Range reads: a browser extension or native
+  helper. Not built.
+
+Checked from the package's LICENSE file and npm metadata on 2026-10-07.

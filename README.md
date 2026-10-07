@@ -23,7 +23,8 @@ The app works out the source type; nobody picks a mode.
 
 | Source | Detected by | Player |
 | --- | --- | --- |
-| MP4, WebM, MOV, MKV, audio files | file extension | native `<video>` |
+| MP4, WebM, MOV, audio files | file extension | native `<video>`, Movi if the browser can't decode it |
+| MKV, AVI, TS/M2TS, WMV, FLV | file extension (or probed file name) | Movi (`movi-player`), native `<video>` if Movi can't |
 | HLS | `.m3u8` | `hls-video-element` (hls.js; native HLS on Safari/iOS) |
 | MPEG-DASH | `.mpd` | `dash-video-element` (dash.js, loaded only for DASH) |
 | YouTube | youtube.com / youtu.be / shorts / embed / live links | `youtube-video-element` (official IFrame Player API) |
@@ -141,13 +142,35 @@ npm run e2e        # browser suite per source type (local mode, generates test m
 if you don't have it). Set `CHROMIUM_PATH` to use a specific Chromium binary.
 The suite answers YouTube's and Vimeo's script URLs with stand-ins
 (`tests/e2e/fakes/`) that implement the same API on the test clip; set
-`E2E_REAL_PROVIDERS=1` to load the real ones. Test media is VP9/Opus because
-Playwright's Chromium has no H.264.
+`E2E_REAL_PROVIDERS=1` to load the real ones. Test media for `<video>` is VP9/Opus
+because Playwright's Chromium has no H.264; the Movi fixtures (MKV H.264 + AC-3, an
+extensionless HEVC Main10 + E-AC-3 file, a one-hour MKV, an AVI) are generated too.
 
-## Playback compatibility
+## Playback compatibility (Movi fallback)
 
-Sources the browser can't decode (e.g. many MKV/HEVC/TrueHD files) show
-**"This source is not browser compatible."** Transcoding is out of scope for V1.
+Direct files the browser can't decode itself (MKV, HEVC/H.265 incl. Main10,
+AC-3/E-AC-3/TrueHD/DTS audio, AVI, MPEG-TS) play through
+[movi-player](https://www.npmjs.com/package/movi-player) 0.4.1 (Apache-2.0):
+FFmpeg (WASM) demuxes the file in the browser, WebCodecs decodes it, and it draws
+on a canvas. `lib/player/movi.ts` maps it onto `PlayerAdapter`; our subtitle
+overlay, controls bar and sync engine stay the same.
+
+- **Routing** (`lib/player/create.ts`, `lib/player/fallback.ts`): MKV/AVI/TS-type
+  files start on Movi; everything else starts on `<video>`. If `<video>` fails
+  with "not supported", "decode error" or "no video track", the same URL is retried
+  once on Movi at the same position, play state, volume and mute (and the other way
+  round). The switch is local: the room's source and revision don't change, so a host
+  on Movi and a guest on `<video>` stay in sync. "Not browser compatible" only shows
+  after both have failed.
+- **Loading**: Movi (~15 MB with its WASM) is a separate chunk, fetched only when a
+  file needs it. YouTube, Vimeo, HLS, DASH and playable MP4/WebM never load it.
+- **Memory**: Movi reads the file with HTTP Range requests and keeps at most 128 MB
+  of it (`MOVI_CACHE_MB`); it never downloads the whole movie.
+- **CORS / Range**: unlike `<video>`, Movi needs the server to allow cross-origin
+  `fetch` with Range. Links that don't show **"This link blocks browser byte-range
+  access, so this format can't be streamed here."** Bytes are never proxied through
+  Vercel and nothing is transcoded on a server. Planned for such links: a browser
+  extension or small native helper that reads the bytes locally.
 
 ## Security notes
 

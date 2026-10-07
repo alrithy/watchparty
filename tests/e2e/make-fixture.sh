@@ -23,3 +23,12 @@ if [ ! -f "$dir/dash/manifest.mpd" ]; then
   ffmpeg "${q[@]}" -i "$dir/clip.mp4" -c copy -f dash -seg_duration 4 -use_template 1 -use_timeline 0 \
     "$dir/dash/manifest.mpd"
 fi
+# Containers and codecs <video> can't play, for the Movi fallback: MKV with H.264 + AC-3, an
+# extensionless HEVC Main10 + E-AC-3 download, and an hour-long MKV for large seeks.
+[ -f "$dir/clip.mkv" ] || ffmpeg "${q[@]}" "${src[@]}" -c:v libx264 -preset ultrafast -g 25 -pix_fmt yuv420p \
+  -c:a ac3 -b:a 96k -shortest "$dir/clip.mkv"
+[ -f "$dir/download-hevc" ] || ffmpeg "${q[@]}" "${src[@]}" -c:v libx265 -preset ultrafast -x265-params log-level=error \
+  -g 25 -pix_fmt yuv420p10le -profile:v main10 -c:a eac3 -b:a 96k -shortest -f matroska "$dir/download-hevc"
+[ -f "$dir/long.mkv" ] || ffmpeg "${q[@]}" -f lavfi -i testsrc=size=160x90:rate=5 -f lavfi -i sine=frequency=440:sample_rate=48000 \
+  -t 3600 -c:v libx264 -preset ultrafast -g 10 -c:a aac -b:a 32k -ac 1 -shortest "$dir/long.mkv"
+[ -f "$dir/clip.avi" ] || ffmpeg "${q[@]}" "${src[@]}" -c:v mpeg4 -c:a libmp3lame -shortest "$dir/clip.avi"

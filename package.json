@@ -17,6 +17,7 @@
     "dash-video-element": "0.3.2",
     "fflate": "0.8.3",
     "hls-video-element": "1.5.11",
+    "movi-player": "0.4.1",
     "next": "16.4.0",
     "parse-torrent-title": "3.0.1",
     "react": "19.3.0",

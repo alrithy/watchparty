@@ -3,7 +3,9 @@ import type { MediaSource, SourceKind } from "@/lib/room/types";
 export const INCOMPATIBLE_MESSAGE = "This source is not browser compatible.";
 export const NOT_DIRECT_MESSAGE = "This source can't be played directly.";
 
-const FILE_EXT = /\.(mp4|m4v|mov|webm|ogv|ogg|oga|mkv|mp3|m4a|aac|flac|wav|opus)$/i;
+const FILE_EXT = /\.(mp4|m4v|mov|webm|ogv|ogg|oga|mkv|avi|ts|m2ts|mts|wmv|flv|mp3|m4a|aac|flac|wav|opus)$/i;
+/** Containers (and the codecs usually inside them) that <video> can't be trusted with: Movi plays these first. */
+const MOVI_EXT = /\.(mkv|avi|ts|m2ts|mts|wmv|flv)$/i;
 const HLS_EXT = /\.m3u8$/i;
 const DASH_EXT = /\.mpd$/i;
 const YT_ID = /^[A-Za-z0-9_-]{11}$/;
@@ -62,6 +64,22 @@ export function labelFor(input: string): string {
   } catch {
     return "media";
   }
+}
+
+/**
+ * Whether a direct file should start on Movi instead of <video>. Chrome opens
+ * many MKVs and then plays them silently (AC-3/DTS) or without picture (HEVC),
+ * which never raises an error to fall back on. The label carries the probed
+ * file name for extensionless download links.
+ */
+export function prefersMovi(source: MediaSource): boolean {
+  if (source.kind !== "file") return false;
+  let path = "";
+  try {
+    path = new URL(source.url).pathname;
+  } catch {}
+  const name = source.label?.replace(/\s+\([^)]*\)$/, "") ?? "";
+  return MOVI_EXT.test(path) || MOVI_EXT.test(name);
 }
 
 function kindFromPath(pathname: string): SourceKind | null {

@@ -365,7 +365,8 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
           if (isHost && restorePendingRef.current && stateRef.current && !restoreAwaitRef.current) {
             const s = stateRef.current;
             restoreAwaitRef.current = s.playing ? "playing" : "seeked";
-            p.seek(expectedPosition(s, clockRef.current.now(), p.duration()));
+            // Lead by the player's seek time, so the restored host doesn't land (and re-anchor the room) behind.
+            p.seek(expectedPosition(s, clockRef.current.now(), p.duration()) + (s.playing ? p.seekLead : 0));
             if (s.playing) tryPlay(p);
           }
           break;
