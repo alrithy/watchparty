@@ -67,7 +67,9 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
   private readonly events = new Emitter();
   private readonly target: HTMLDivElement;
   private readonly wrapper: HTMLDivElement;
+  /** Set once the API reports ready: before that the object has no player methods. */
   private player: YTPlayer | null = null;
+  private pending: YTPlayer | null = null;
   private isReady = false;
   private state: number = STATE.UNSTARTED;
   private wantPlaying = false;
@@ -96,7 +98,7 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
       () => {
         if (this.destroyed || !window.YT) return;
         const c = this.opts.controls;
-        this.player = new window.YT.Player(this.target, {
+        const created = new window.YT.Player(this.target, {
           videoId: source.videoId ?? "",
           width: "100%",
           height: "100%",
@@ -112,6 +114,8 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
           },
           events: {
             onReady: () => {
+              if (this.destroyed) return;
+              this.player = created;
               this.isReady = true;
               this.events.emit("ready");
               this.events.emit("canplay");
@@ -121,6 +125,7 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
             onError: () => this.fail(NOT_DIRECT_MESSAGE),
           },
         });
+        this.pending = created;
         const iframe = this.wrapper.querySelector("iframe");
         if (iframe) iframe.className = "absolute inset-0 h-full w-full";
         this.poll = setInterval(() => this.sample(), POLL_MS);
@@ -278,8 +283,9 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
     if (this.poll) clearInterval(this.poll);
     this.settlePlay(false);
     this.events.clear();
-    this.player?.destroy();
-    this.player = null;
+    const p = this.player ?? this.pending;
+    if (typeof p?.destroy === "function") p.destroy();
+    this.player = this.pending = null;
     this.wrapper.remove();
   }
 }

@@ -355,7 +355,7 @@ const LIVE_SOURCES = [
     kind: "file",
   },
   { name: "YouTube", url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", kind: "youtube" },
-  { name: "Vimeo", url: "https://vimeo.com/76979871", kind: "vimeo" },
+  { name: "Vimeo", url: "https://vimeo.com/1084537", kind: "vimeo" },
   { name: "WebM", url: "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.360p.vp9.webm", kind: "file" },
 ] as const;
 
@@ -365,7 +365,7 @@ const FIXTURE_SOURCES = [
   { name: "DASH", url: "/__test__/dash/manifest.mpd", kind: "dash" },
   { name: "generic CDN URL without extension", url: "/__test__/download", kind: "file" },
   { name: "YouTube", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", kind: "youtube" },
-  { name: "Vimeo", url: "https://vimeo.com/76979871", kind: "vimeo" },
+  { name: "Vimeo", url: "https://vimeo.com/1084537", kind: "vimeo" },
 ] as const;
 
 const SOURCES = process.env.E2E_LIVE_SOURCES ? LIVE_SOURCES : FIXTURE_SOURCES;

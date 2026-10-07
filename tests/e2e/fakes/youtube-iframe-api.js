@@ -23,6 +23,8 @@
       }, 50);
     }
     v.addEventListener("loadedmetadata", function () {
+      // Like the real API, the player methods only exist once it is ready.
+      Object.assign(shell, api);
       if (events.onReady) events.onReady({ target: api });
       emit(5);
     });
@@ -49,7 +51,8 @@
       unMute: function () { v.muted = false; },
       destroy: function () { v.removeAttribute("src"); v.load(); v.remove(); },
     };
-    return api;
+    var shell = { destroy: api.destroy };
+    return shell;
   }
   window.YT = { Player: Player };
   setTimeout(function () {

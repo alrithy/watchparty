@@ -14,10 +14,12 @@ import { createTransport, type ConnectionStatus, type RoomTransport } from "@/li
 import { createPlayer } from "@/lib/player/create";
 import type { PlayerAdapter, PlayerEvent } from "@/lib/player/types";
 import { ServerClock } from "@/lib/sync/clock";
-import { decideCorrection, expectedPosition } from "@/lib/sync/drift";
+import { DRIFT_IGNORE, decideCorrection, expectedPosition } from "@/lib/sync/drift";
 
 const HEARTBEAT_MS = 3000;
 const DRIFT_TICK_MS = 250;
+/** Cap on the learned extra seek lead, so one slow seek can't throw later ones far ahead. */
+const MAX_EXTRA_LEAD = 3;
 const SNAPSHOT_RETRY_MS = 3000;
 const BUFFER_PAUSE_DELAY_MS = 1500;
 
@@ -395,14 +397,19 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
     let correcting = false;
     let canNudgeRate = true;
     let lastSeekAt = 0;
+    // Seeks on slow sources land behind (the player loads before resuming); learn by how much.
+    let extraLead = 0;
+    let measureLanding = false;
+    let retried = false;
     let lastPresenceDrift: number | null = null;
     let lastPresenceAt = 0;
 
     const seekTo = (p: PlayerAdapter, target: number, now: number) => {
       p.setRate(1);
-      p.seek(target);
+      p.seek(target + extraLead);
       lastSeekAt = now;
       correcting = false;
+      measureLanding = true;
     };
 
     const tick = () => {
@@ -412,6 +419,9 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
         correcting = false;
         canNudgeRate = true;
         lastSeekAt = 0;
+        extraLead = 0;
+        measureLanding = false;
+        retried = false;
       }
       const s = stateRef.current;
       if (!p || !s || !mediaRef.current || !p.ready() || p.error()) return;
@@ -432,6 +442,20 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
           tryPlay(p);
         }
       } else if (!p.seeking() && p.canContinue()) {
+        if (measureLanding) {
+          measureLanding = false;
+          if (Math.abs(d) > DRIFT_IGNORE) {
+            extraLead = Math.min(MAX_EXTRA_LEAD, Math.max(0, extraLead - d));
+            // One immediate retry with the learned lead instead of a long rate nudge.
+            if (!retried) {
+              retried = true;
+              seekTo(p, expected + p.seekLead, now);
+              return;
+            }
+          } else {
+            retried = false;
+          }
+        }
         const c = decideCorrection(d, correcting, now - lastSeekAt, canNudgeRate);
         if (c.action === "seek") {
           seekTo(p, expected + p.seekLead, now);
