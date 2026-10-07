@@ -29,6 +29,7 @@ fi
   -c:a ac3 -b:a 96k -shortest "$dir/clip.mkv"
 [ -f "$dir/download-hevc" ] || ffmpeg "${q[@]}" "${src[@]}" -c:v libx265 -preset ultrafast -x265-params log-level=error \
   -g 25 -pix_fmt yuv420p10le -profile:v main10 -c:a eac3 -b:a 96k -shortest -f matroska "$dir/download-hevc"
+[ -f "$dir/hevc.mp4" ] || ffmpeg "${q[@]}" -i "$dir/download-hevc" -c copy -tag:v hvc1 -movflags +faststart "$dir/hevc.mp4"
 [ -f "$dir/long.mkv" ] || ffmpeg "${q[@]}" -f lavfi -i testsrc=size=160x90:rate=5 -f lavfi -i sine=frequency=440:sample_rate=48000 \
   -t 3600 -c:v libx264 -preset ultrafast -g 10 -c:a aac -b:a 32k -ac 1 -shortest "$dir/long.mkv"
 [ -f "$dir/clip.avi" ] || ffmpeg "${q[@]}" "${src[@]}" -c:v mpeg4 -c:a libmp3lame -shortest "$dir/clip.avi"

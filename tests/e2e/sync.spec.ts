@@ -8,6 +8,7 @@ const TYPES: Record<string, string> = {
   mp4: "video/mp4",
   m3u8: "application/vnd.apple.mpegurl",
   mpd: "application/dash+xml",
+  mkv: "video/x-matroska",
   m4s: "video/iso.segment",
 };
 
@@ -357,10 +358,19 @@ test("pause for everyone while a guest buffers", async ({ context }) => {
 // ---------- Paste-and-play: every source type through the same sync engine ----------
 
 /** E2E_LIVE_SOURCES=1 swaps the local fixtures for public media (needs open internet). */
-/** Played by Movi: MKV straight away, the extensionless HEVC download after <video> fails on it. */
+/** Played by Movi: MKV straight away, HEVC after <video> fails on it. */
+const MKV_SOURCE = { name: "MKV H.264 + AC-3", url: "/__test__/clip.mkv", kind: "file", engine: "movi" } as const;
 const MOVI_SOURCES = [
-  { name: "MKV H.264 + AC-3", url: "/__test__/clip.mkv", kind: "file", engine: "movi" },
+  MKV_SOURCE,
   { name: "HEVC Main10 + E-AC-3 without extension", url: "/__test__/download-hevc", kind: "file", engine: "movi" },
+] as const;
+/**
+ * Deployed runs serve the fixtures from the test machine, which the server-side probe of an
+ * extensionless link can't reach; an .mp4 the browser can't decode takes the same fallback.
+ */
+const LIVE_MOVI_SOURCES = [
+  MKV_SOURCE,
+  { name: "HEVC Main10 + E-AC-3 in MP4", url: "/__test__/hevc.mp4", kind: "file", engine: "movi" },
 ] as const;
 
 const LIVE_SOURCES = [
@@ -377,7 +387,7 @@ const LIVE_SOURCES = [
   { name: "Vimeo", url: "https://vimeo.com/1084537", kind: "vimeo" },
   { name: "WebM", url: "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.360p.vp9.webm", kind: "file" },
   // Served from the test machine (see prepareContext) on deployed runs too.
-  ...MOVI_SOURCES,
+  ...LIVE_MOVI_SOURCES,
 ] as const;
 
 const FIXTURE_SOURCES = [
