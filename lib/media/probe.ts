@@ -9,7 +9,7 @@ import type { SourceKind } from "@/lib/room/types";
  */
 
 const TIMEOUT_MS = 6000;
-const MAX_REDIRECTS = 5;
+export const MAX_REDIRECTS = 5;
 const SNIFF_BYTES = 2048;
 const ALLOWED_PORTS = new Set(["", "80", "443", "8080", "8443"]);
 
@@ -79,11 +79,12 @@ export function isPrivateAddress(ip: string): boolean {
   return v6 === "::" || v6 === "::1" || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6) || v6.startsWith("ff");
 }
 
-type Options = { fetchImpl?: typeof fetch; resolve?: (host: string) => Promise<string[]>; allowPrivate?: boolean };
+export type ProbeOptions = { fetchImpl?: typeof fetch; resolve?: (host: string) => Promise<string[]>; allowPrivate?: boolean };
 
 const defaultResolve = async (host: string) => (await lookup(host, { all: true })).map((a) => a.address);
 
-async function assertPublic(url: URL, opts: Options): Promise<boolean> {
+/** True when every address of `url`'s host is public and the scheme and port are allowed. */
+export async function assertPublic(url: URL, opts: ProbeOptions): Promise<boolean> {
   if (url.protocol !== "https:" && url.protocol !== "http:") return false;
   // Test-only escape hatch (local e2e serves media from localhost:<port>).
   if (opts.allowPrivate) return true;
@@ -118,7 +119,7 @@ async function readHead(res: Response): Promise<string> {
 }
 
 /** Follows redirects manually so every hop is checked against private addresses. */
-async function request(start: URL, method: "HEAD" | "GET", opts: Options, signal: AbortSignal, ranged = true) {
+async function request(start: URL, method: "HEAD" | "GET", opts: ProbeOptions, signal: AbortSignal, ranged = true) {
   let url = start;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (!(await assertPublic(url, opts))) return null;
@@ -140,7 +141,7 @@ async function request(start: URL, method: "HEAD" | "GET", opts: Options, signal
   return null;
 }
 
-export async function probeUrl(input: string, opts: Options = {}): Promise<ProbeResult> {
+export async function probeUrl(input: string, opts: ProbeOptions = {}): Promise<ProbeResult> {
   let url: URL;
   try {
     url = new URL(input);
@@ -181,7 +182,7 @@ export async function probeUrl(input: string, opts: Options = {}): Promise<Probe
 export async function fetchSmallFile(
   input: string,
   maxBytes: number,
-  opts: Options = {},
+  opts: ProbeOptions = {},
 ): Promise<{ ok: true; bytes: ArrayBuffer } | { ok: false; error: string }> {
   let url: URL;
   try {

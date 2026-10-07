@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { resolve as resolvePath } from "node:path";
 import { expect, test as base, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 const CLIP = "/__test__/clip.webm";
@@ -756,12 +758,142 @@ test("Movi failures say why: blocked byte-range access, or a missing file", asyn
   const noCors = process.env.E2E_BASE_URL ? process.env.E2E_NOCORS_URL : "http://127.0.0.1:3100/__test__/clip.avi?sig=abc";
   if (noCors) {
     await paste(page, noCors);
+    // The link has no redirect to skip, so the resolver finds the file's own server refusing the page.
     await expect(page.getByTestId("media-error")).toHaveText(
-      "This link blocks browser byte-range access, so this format can't be streamed here.",
-      { timeout: 30_000 },
+      `The video's server (${new URL(noCors).hostname}) blocks browser streaming of this format. On desktop Chrome, Edge or Brave, the WatchParty CORS Unlocker extension fixes this; phone browsers can't play this link.`,
+      { timeout: 40_000 },
+    );
+    expect(await page.evaluate(() => (window as unknown as { __watchparty: { player(): { failureReason?(): string | null } } }).__watchparty.player().failureReason?.())).toBe(
+      "FINAL_CDN_CORS_BLOCKED",
     );
   }
 
   await paste(page, "/__test__/missing.mkv");
   await expect(page.getByTestId("media-error")).toHaveText("The video link wasn't found. It may have expired.", { timeout: 30_000 });
+});
+
+/**
+ * A debrid-style link on another origin: /hop/<file> answers 302 without CORS headers and
+ * points at /cors/<file> (CORS + Range) or, for /hop-nocors/<file>, at /nocors/<file> (Range only).
+ * Records every request so the test can check the app server only ever asked for one byte.
+ */
+const MEDIA_PORT = 3200;
+const SIGNED = "?X-Expires=1760000000&X-Signature=Ab%2Bc%2F%3D~z";
+const mediaLog: { path: string; range: string; ua: string; bytes: number }[] = [];
+let mediaServer: Server | null = null;
+
+function startMediaServer() {
+  return new Promise<void>((done) => {
+    mediaServer = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+      const [, kind, name] = /^\/([a-z-]+)\/([\w.-]+)$/.exec(url.pathname) ?? [];
+      const entry = { path: req.url ?? "", range: req.headers.range ?? "", ua: req.headers["user-agent"] ?? "", bytes: 0 };
+      mediaLog.push(entry);
+      if (kind === "hop" || kind === "hop-nocors") {
+        // Relative Location, like many CDNs send; the signed query must survive untouched.
+        res.writeHead(302, { Location: `../${kind === "hop" ? "cors" : "nocors"}/${name}${SIGNED}` }).end();
+        return;
+      }
+      if ((kind !== "cors" && kind !== "nocors") || url.search !== SIGNED) return void res.writeHead(404).end();
+      let file: Buffer;
+      try {
+        file = readFileSync(resolvePath("public/__test__", name));
+      } catch {
+        return void res.writeHead(404).end();
+      }
+      const cors = kind === "cors" ? { "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Content-Range, Content-Length" } : {};
+      if (req.method === "OPTIONS") return void res.writeHead(204, { ...cors, "Access-Control-Allow-Headers": "range" }).end();
+      const m = /bytes=(\d+)-(\d*)/.exec(req.headers.range ?? "");
+      const start = m ? Number(m[1]) : 0;
+      const end = m?.[2] ? Math.min(Number(m[2]), file.length - 1) : file.length - 1;
+      const body = file.subarray(start, end + 1);
+      entry.bytes = body.length;
+      res.writeHead(m ? 206 : 200, {
+        ...cors,
+        "Content-Type": name.endsWith(".mkv") ? "video/x-matroska" : "application/octet-stream",
+        "Accept-Ranges": "bytes",
+        "Content-Length": String(body.length),
+        ...(m ? { "Content-Range": `bytes ${start}-${end}/${file.length}` } : {}),
+      });
+      res.end(body);
+    }).listen(MEDIA_PORT, "127.0.0.1", done);
+  });
+}
+
+test.describe("redirect resolver", () => {
+  test.skip(!!process.env.E2E_BASE_URL, "needs the local media server");
+  test.beforeAll(startMediaServer);
+  test.afterAll(() => new Promise<void>((done) => (mediaServer ? mediaServer.close(() => done()) : done())));
+  test.beforeEach(() => void (mediaLog.length = 0));
+
+  /** What the app's server (not the browser) fetched: never more than the one byte it asks for. */
+  const serverRequests = () => mediaLog.filter((r) => !/Chrome|HeadlessChrome/.test(r.ua));
+
+  test("a redirect hop without CORS is skipped: Movi plays the final URL, seeks, and the guest follows", async ({ browser, context }) => {
+    const host = await context.newPage();
+    const link = `http://localhost:${MEDIA_PORT}/hop/long.mkv`;
+    const roomUrl = await hostRoom(host, link);
+    await expect(host.locator('[data-provider="movi"]')).toHaveCount(1);
+    const guest = await guestPage(browser, context);
+    await guest.goto(roomUrl);
+    await expect(guest.locator('[data-provider="movi"]')).toHaveCount(1, { timeout: 30_000 });
+    await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 30_000 });
+
+    await host.getByTestId("movi-play").click();
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+    await act(host, { seek: 30 * 60 });
+    await expect.poll(async () => (await info(guest)).t, { timeout: 15_000 }).toBeGreaterThan(30 * 60);
+    await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] }).toBeLessThan(0.4);
+    console.log(`resolver: seek gap ${(await gap(host, guest)).toFixed(3)}s`);
+
+    // The browser read the final URL with the signed query intact.
+    expect(mediaLog.some((r) => r.path === `/cors/long.mkv${SIGNED}` && /Chrome/.test(r.ua) && r.bytes > 1)).toBe(true);
+    // The app server only followed headers: one byte per hop at most, never the video.
+    const fromServer = serverRequests();
+    expect(fromServer.length).toBeGreaterThan(0);
+    for (const r of fromServer) {
+      expect(r.range).toBe("bytes=0-0");
+      expect(r.bytes).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test("a final server without CORS is named, not reported as a format problem", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("create-room").click();
+    await page.waitForURL(/\/room\//);
+    await paste(page, `http://localhost:${MEDIA_PORT}/hop-nocors/clip.avi`);
+    await expect(page.getByTestId("media-error")).toHaveText(
+      "The video's server (localhost) blocks browser streaming of this format. On desktop Chrome, Edge or Brave, the WatchParty CORS Unlocker extension fixes this; phone browsers can't play this link.",
+      { timeout: 40_000 },
+    );
+    // One resolver pass: the hop was followed once by the server, not in a loop.
+    expect(serverRequests().filter((r) => r.path.startsWith("/hop-nocors/"))).toHaveLength(1);
+  });
+
+  test("with the CORS Unlocker extension, the same final server plays", async () => {
+    const { chromium } = await import("@playwright/test");
+    const ext = resolvePath("extensions/cors-unlocker");
+    const ctx = await chromium.launchPersistentContext("", {
+      // Extensions need full Chromium in new headless mode, not the headless shell.
+      ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : { channel: "chromium" }),
+      headless: true,
+      args: [`--disable-extensions-except=${ext}`, `--load-extension=${ext}`, "--autoplay-policy=no-user-gesture-required"],
+      baseURL: `http://localhost:3100`,
+    });
+    try {
+      const worker = ctx.serviceWorkers()[0] ?? (await ctx.waitForEvent("serviceworker"));
+      await worker.evaluate(() => (globalThis as unknown as { chrome: { storage: { local: { set(v: object): Promise<void> } } } }).chrome.storage.local.set({ cdnDomains: ["localhost"] }));
+      const page = await ctx.newPage();
+      await page.goto("/");
+      await expect.poll(() => page.evaluate(() => document.documentElement.dataset.watchpartyCorsUnlocker ?? "")).not.toBe("");
+      await page.getByTestId("create-room").click();
+      await page.waitForURL(/\/room\//);
+      await paste(page, `http://localhost:${MEDIA_PORT}/hop-nocors/clip.avi`);
+      await expect(page.locator('[data-provider="movi"]')).toHaveCount(1, { timeout: 30_000 });
+      await expect.poll(async () => (await info(page)).ready, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
+      await expect(page.getByTestId("media-error")).toHaveCount(0);
+    } finally {
+      await ctx.close();
+    }
+  });
 });

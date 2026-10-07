@@ -71,7 +71,20 @@ Licenses checked from each repository's LICENSE file and npm metadata on 2026-10
   all opened and seeked; the hour-long file read ~70 MB around each position, never the whole file.
 - Considered only if Movi had failed the spike: brianhvo02/libmpv-wasm, MediaBunny.
   Raw ffmpeg.wasm transcoding of whole movies was ruled out.
-- Later, for links that block cross-origin Range reads: a browser extension or native
-  helper. Not built.
+- Links that block cross-origin Range reads: see "Redirect resolver and CORS Unlocker" below.
 
 Checked from the package's LICENSE file and npm metadata on 2026-10-07.
+
+## Redirect resolver and CORS Unlocker (2026-10-07)
+
+| Project | License | Reuse method | Use |
+| --- | --- | --- | --- |
+| NuvioWebEnhanced | no clear license found | architecture/reference only | no copied code |
+
+- The idea taken: resolve a debrid link's redirect chain on the server (headers only)
+  and let the browser stream the final CDN URL, with an optional desktop extension
+  that adds CORS headers when the CDN itself sends none. `lib/media/resolve-stream.ts`,
+  `lib/media/refine.ts` and `extensions/cors-unlocker/` were written independently
+  for this repo; no source, manifest or rule file was copied.
+- No new dependencies. The extension uses only Chrome's built-in
+  `declarativeNetRequest` API.

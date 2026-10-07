@@ -99,6 +99,8 @@ vi.mock("@/lib/player/movi", async (orig) => {
 const { FallbackPlayer, finalMessage, shouldFallBack } = await import("@/lib/player/fallback");
 const { RANGE_BLOCKED_MESSAGE, MOVI_INCOMPATIBLE_MESSAGE, classifyMoviError, moviErrorMessage } = await import("@/lib/player/movi");
 
+const { FINAL_CDN_CORS_BLOCKED, finalCdnBlockedMessage } = await import("@/lib/media/refine");
+
 const file = (url: string, label = "x (host)"): MediaSource => ({ kind: "file", url, label });
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -228,5 +230,117 @@ describe("native ↔ Movi fallback", () => {
     await tick();
     expect(FakeAdapter.made).toHaveLength(1);
     expect(errors).toHaveLength(1);
+  });
+});
+
+describe("redirect resolver retry", () => {
+  const LINK = "https://debrid.example/d/ABC?sig=x%2By";
+  const FINAL = "https://node7.cdn.example/dl/ABC/Movie.mkv?token=Q%3D%3D";
+
+  function start(refine: (url: string) => Promise<unknown>, order: ["movi" | "native", "movi" | "native"] = ["movi", "native"]) {
+    FakeAdapter.made = [];
+    const asked: string[] = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, order, async (url) => {
+      asked.push(url);
+      return (await refine(url)) as never;
+    });
+    const errors: string[] = [];
+    p.on((e, d) => e === "error" && errors.push(d?.message ?? ""));
+    const src = file(LINK, "Movie.mkv (debrid.example)");
+    p.load(src);
+    return { p, asked, errors, src };
+  }
+
+  it("retries Movi once on the final URL, at the same position and play state", async () => {
+    const { p, asked, errors, src } = start(async () => ({ url: FINAL }));
+    p.setVolume(0.3);
+    p.setMuted(true);
+    void p.play();
+    p.seek(2712.25);
+    const first = FakeAdapter.made[0];
+    first.emit("error", { message: RANGE_BLOCKED_MESSAGE });
+    expect(p.error()).toBeNull();
+    await tick();
+    await tick();
+    expect(asked).toEqual([LINK]);
+    expect(first.destroyed).toBe(true);
+    expect(FakeAdapter.made).toHaveLength(2);
+    const retry = FakeAdapter.made[1];
+    expect(retry.engine).toBe("movi");
+    expect(retry.loaded).toEqual({ ...src, url: FINAL });
+    expect(p.currentTime()).toBe(2712.25);
+    expect(p.playing()).toBe(true);
+    retry.isReady = true;
+    retry.emit("ready");
+    expect(retry.t).toBe(2712.25);
+    expect(retry.playCalls).toBe(1);
+    expect(retry.volume).toBe(0.3);
+    expect(retry.muted).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  it("never resolves twice: a second byte-range failure goes on to <video> with the original link", async () => {
+    const { asked, errors } = start(async () => ({ url: FINAL }));
+    FakeAdapter.made[0].emit("error", { message: RANGE_BLOCKED_MESSAGE });
+    await tick();
+    await tick();
+    FakeAdapter.made[1].emit("error", { message: RANGE_BLOCKED_MESSAGE });
+    await tick();
+    expect(asked).toHaveLength(1);
+    expect(FakeAdapter.made.map((a) => a.engine)).toEqual(["movi", "movi", "native"]);
+    expect(FakeAdapter.made[2].loaded?.url).toBe(LINK);
+    FakeAdapter.made[2].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    expect(errors).toEqual([RANGE_BLOCKED_MESSAGE]);
+    expect(FakeAdapter.made).toHaveLength(3);
+  });
+
+  it("says the final CDN blocks the page, instead of a format error", async () => {
+    const message = finalCdnBlockedMessage("node7.cdn.example", false);
+    const { p, errors } = start(async () => ({ message, reason: FINAL_CDN_CORS_BLOCKED }));
+    FakeAdapter.made[0].emit("error", { message: RANGE_BLOCKED_MESSAGE });
+    await tick();
+    await tick();
+    expect(p.activeEngine()).toBe("native");
+    expect(FakeAdapter.made[1].loaded?.url).toBe(LINK);
+    FakeAdapter.made[1].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    expect(errors).toEqual([message]);
+    expect(p.failureReason()).toBe(FINAL_CDN_CORS_BLOCKED);
+    expect(message).toContain("node7.cdn.example");
+    expect(message).not.toMatch(/token|https?:/);
+  });
+
+  it("works when Movi is the second engine too", async () => {
+    const message = finalCdnBlockedMessage("node7.cdn.example", true);
+    const { errors } = start(async () => ({ message, reason: FINAL_CDN_CORS_BLOCKED }), ["native", "movi"]);
+    FakeAdapter.made[0].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    FakeAdapter.made[1].emit("error", { message: RANGE_BLOCKED_MESSAGE });
+    await tick();
+    await tick();
+    expect(errors).toEqual([message]);
+    expect(FakeAdapter.made).toHaveLength(2);
+  });
+
+  it("keeps the original message when the resolver can't help", async () => {
+    const { asked, errors } = start(async () => {
+      throw new Error("offline");
+    });
+    FakeAdapter.made[0].emit("error", { message: RANGE_BLOCKED_MESSAGE });
+    await tick();
+    await tick();
+    FakeAdapter.made[1].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    expect(asked).toHaveLength(1);
+    expect(errors).toEqual([RANGE_BLOCKED_MESSAGE]);
+  });
+
+  it("doesn't call the resolver for codec failures", async () => {
+    const { asked } = start(async () => ({ url: FINAL }));
+    FakeAdapter.made[0].emit("error", { message: MOVI_INCOMPATIBLE_MESSAGE });
+    await tick();
+    expect(asked).toEqual([]);
+    expect(FakeAdapter.made[1].engine).toBe("native");
   });
 });

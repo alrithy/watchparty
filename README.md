@@ -167,10 +167,41 @@ overlay, controls bar and sync engine stay the same.
 - **Memory**: Movi reads the file with HTTP Range requests and keeps at most 128 MB
   of it (`MOVI_CACHE_MB`); it never downloads the whole movie.
 - **CORS / Range**: unlike `<video>`, Movi needs the server to allow cross-origin
-  `fetch` with Range. Links that don't show **"This link blocks browser byte-range
-  access, so this format can't be streamed here."** Bytes are never proxied through
-  Vercel and nothing is transcoded on a server. Planned for such links: a browser
-  extension or small native helper that reads the bytes locally.
+  `fetch` with Range. Bytes are never proxied through Vercel and nothing is
+  transcoded on a server; see the next section for what happens instead.
+
+## Links that block browser byte-range access
+
+Debrid links (Real-Debrid, Nuvio/Torrentio...) usually redirect one or more times
+before reaching the CDN that serves the file. If a hop in that chain sends no CORS
+headers, the browser refuses Movi's reads even when the final CDN would allow them.
+
+1. **Redirect resolver** (`POST /api/media/resolve`, `lib/media/resolve-stream.ts`).
+   Takes `{ url }` and follows the chain by hand (`redirect: "manual"`) with a
+   one-byte `Range: bytes=0-0` request per hop, cancelling each body unread. Every
+   hop goes through the probe's SSRF guard (`assertPublic` in `lib/media/probe.ts`):
+   http/https only; ports 80/443/8080/8443; no localhost, private, link-local,
+   CGNAT or metadata addresses (IPv4 and IPv6, after DNS). At most 5 redirects,
+   loops refused, 9 s total. Relative `Location`s are resolved; absolute ones are
+   kept byte-for-byte so signed query strings survive. No cookies, no
+   Authorization header, nothing logged. Returns `{ originalUrl, finalUrl,
+   redirected, status, supportsRange, contentType, cors }`. It never returns video bytes.
+2. **One retry** (`lib/player/fallback.ts`, `lib/media/refine.ts`). When Movi reports
+   blocked byte-range access, the player calls the resolver once, checks from the page
+   that the final URL is readable (a one-byte CORS `fetch`), and restarts Movi there
+   at the same position, play state, volume and mute. The room's source and revision
+   don't change, so subtitles, delay and sync carry on as before. No second pass.
+3. **Final CDN blocks CORS too** (internal reason `FINAL_CDN_CORS_BLOCKED`). The viewer
+   sees *"The video's server (host) blocks browser streaming of this format. On desktop
+   Chrome, Edge or Brave, the WatchParty CORS Unlocker extension fixes this; phone
+   browsers can't play this link."* instead of a format error.
+4. **CORS Unlocker** (`extensions/cors-unlocker/`, optional, desktop only, not part of
+   the web app). See its README.
+
+Possible later fallbacks for Real-Debrid links, **not built**: RD's
+`GET /streaming/transcode/{id}` (HLS from RD) and `/unrestrict/link` with `remote=1`.
+Both depend on how RD binds links to the requesting IP, so they need checking
+against a real account first.
 
 ## Security notes
 
