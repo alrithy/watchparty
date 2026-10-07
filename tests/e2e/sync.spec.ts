@@ -883,8 +883,12 @@ test.describe("redirect resolver", () => {
       baseURL: `http://localhost:3100`,
     });
     try {
-      const worker = ctx.serviceWorkers()[0] ?? (await ctx.waitForEvent("serviceworker"));
-      await worker.evaluate(() => (globalThis as unknown as { chrome: { storage: { local: { set(v: object): Promise<void> } } } }).chrome.storage.local.set({ cdnDomains: ["localhost"] }));
+      const isExt = (w: { url(): string }) => w.url().startsWith("chrome-extension://");
+      const worker = ctx.serviceWorkers().find(isExt) ?? (await ctx.waitForEvent("serviceworker", { predicate: isExt }));
+      type Chrome = { chrome?: { storage?: { local: { set(v: object): Promise<void> } } } };
+      // The worker can be reported before its extension APIs are bound.
+      await expect.poll(() => worker.evaluate(() => !!(globalThis as Chrome).chrome?.storage)).toBe(true);
+      await worker.evaluate(() => (globalThis as Chrome).chrome!.storage!.local.set({ cdnDomains: ["localhost"] }));
       const page = await ctx.newPage();
       await page.goto("/");
       await expect.poll(() => page.evaluate(() => document.documentElement.dataset.watchpartyCorsUnlocker ?? "")).not.toBe("");
