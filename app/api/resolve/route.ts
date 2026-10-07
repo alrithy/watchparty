@@ -1,6 +1,7 @@
 import { hostToken } from "@/lib/realdebrid/client";
 import { redactUrl, resolveHostLink, validateHostLink } from "@/lib/realdebrid/resolve";
 import type { HostRdError } from "@/lib/realdebrid/types";
+import { isCrossSite } from "@/lib/http/same-origin";
 
 const noStore = { "Cache-Control": "no-store, max-age=0" };
 
@@ -8,24 +9,12 @@ function fail(error: HostRdError) {
   return Response.json({ error: { code: error.code, message: error.message } }, { status: error.status, headers: noStore });
 }
 
-/** Rejects calls from other sites' pages so they can't spend the host's account through a visitor's browser. */
-function crossSite(request: Request): boolean {
-  if (request.headers.get("sec-fetch-site") === "cross-site") return true;
-  const origin = request.headers.get("origin");
-  if (!origin) return false;
-  try {
-    return new URL(origin).host !== (request.headers.get("host") ?? new URL(request.url).host);
-  } catch {
-    return true;
-  }
-}
-
 /**
  * Host Real-Debrid: POST { link } -> { media: { url, filename, mimeType, filesize } }.
  * The token never leaves the server; the browser streams `url` straight from Real-Debrid.
  */
 export async function POST(request: Request) {
-  if (crossSite(request)) {
+  if (isCrossSite(request)) {
     return Response.json({ error: { code: "forbidden", message: "Forbidden." } }, { status: 403, headers: noStore });
   }
   const token = hostToken();

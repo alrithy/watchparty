@@ -1,12 +1,17 @@
-export type PlaybackMode = "direct" | "host-rd";
+/** Which player handles a source. Detected from the pasted URL; users never pick it. */
+export type SourceKind = "file" | "hls" | "dash" | "youtube" | "vimeo";
 
 /** What the room is watching. Never contains credentials. */
 export type MediaSource = {
-  mode: PlaybackMode;
-  /** Browser-playable URL. */
+  kind: SourceKind;
+  /** The URL as pasted (direct media URL, or the YouTube/Vimeo page). */
   url: string;
-  /** Short display name (file name or host). */
+  /** Short display name (file name, host or provider). */
   label: string;
+  /** YouTube or Vimeo video id. */
+  videoId?: string;
+  /** Vimeo unlisted-video hash (the `h` parameter). */
+  hash?: string;
 };
 
 /** Authoritative playback state, owned by the host in V1. */

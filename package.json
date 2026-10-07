@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
+    "dashjs": "^5.2.1",
     "hls.js": "^1.7.3",
     "next": "16.4.0",
     "react": "19.3.0",

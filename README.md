@@ -3,7 +3,7 @@
 Private, invite-only synchronized video playback for a small group (built for 2,
 designed to allow more). Next.js + TypeScript + Tailwind + Supabase Realtime, deployed on Vercel.
 
-Status: **Milestone 3** (rooms, direct URL sync, Host Real-Debrid). See [docs/PLAN.md](docs/PLAN.md).
+Status: **Milestone 3** (universal paste-and-play). See [docs/PLAN.md](docs/PLAN.md).
 
 ## How it works
 
@@ -16,26 +16,43 @@ Status: **Milestone 3** (rooms, direct URL sync, Host Real-Debrid). See [docs/PL
   The host can enable "Pause when a participant buffers".
 - Refresh/reconnect: guests ask the host for the latest state and jump back in.
 
-## Host Real-Debrid
+## Paste and play
 
-The host picks **Host Real-Debrid**, pastes a hoster link and clicks Load. The
-browser sends only the link to `POST /api/resolve`; the server calls
-`POST https://api.real-debrid.com/rest/1.0/unrestrict/link` with
-`REAL_DEBRID_TOKEN` in the `Authorization` header and returns
-`{ url, filename, mimeType, filesize }`. Host and guests then stream `url`
-directly from Real-Debrid's CDN; no video bytes pass through Vercel.
+The host pastes any link into **Paste anything to watch** and presses **Play**.
+The app works out the source type; nobody picks a mode.
 
-- If Real-Debrid refuses the request because of an IP restriction (`error_code` 22,
-  e.g. because Vercel runs on cloud IPs), the server retries once with `remote=1`,
-  which uses the account's Remote traffic.
-- Errors are mapped to clear messages: invalid/expired token, account locked,
-  unsupported hoster, dead/unavailable link, hoster down, IP not allowed,
-  traffic exhausted and rate limits (the API allows 250 requests/minute).
-- Logs only ever include hostnames, never the token, the hoster link or the generated link.
-- The route refuses cross-site browser requests. It has no other authentication,
-  so anyone who can reach the deployment could spend the host's account: keep
-  Vercel deployment protection on, or don't set the token on public deployments.
-- Magnet/torrent links and guest Real-Debrid accounts are later milestones.
+| Source | Detected by | Player |
+| --- | --- | --- |
+| MP4, WebM, MOV, MKV, audio files | file extension | native `<video>` |
+| HLS | `.m3u8` | native HLS (Safari/iOS) or hls.js |
+| MPEG-DASH | `.mpd` | dash.js (loaded only for DASH) |
+| YouTube | youtube.com / youtu.be / shorts / embed / live links | official IFrame Player API |
+| Vimeo | vimeo.com / player.vimeo.com links (incl. unlisted hash) | official Vimeo Player SDK |
+| Final CDN/download URLs (Real-Debrid, Torrentio, Nuvio, ...) | extension, else server probe | whichever of the above fits |
+
+**Detection** (`lib/media/source.ts` → `resolveSource`) uses the URL alone. When the
+path gives no hint, `POST /api/probe` (`lib/media/probe.ts`) reads only the response
+headers (HEAD, falling back to the first 2 KB) to tell file / HLS / DASH / web page
+apart. It refuses private, loopback and link-local addresses on every redirect hop,
+and if it can't tell, the HTML5 player simply tries. Video bytes never pass through Vercel.
+
+**Players** (`lib/player/`) all implement one `PlayerAdapter` interface
+(`load, play, pause, seek, currentTime, duration, playing, destroy`, plus a few
+status getters and a uniform event stream). `Html5PlayerAdapter`,
+`HlsPlayerAdapter`, `DashPlayerAdapter`, `YouTubePlayerAdapter` and
+`VimeoPlayerAdapter` translate their provider's API into those events, and the
+sync engine (`components/useWatchParty.ts`) only talks to the interface.
+Providers without fine-grained playback rates (YouTube; Vimeo on basic accounts)
+correct drift by seeking only, with a 0.6 s dead band.
+
+**Can't be played directly:** web pages, DRM-protected media, private or
+embed-disabled YouTube/Vimeo videos, playlists/channels, non-http(s) links, and
+links that need a login show "This source can't be played directly." Media the
+browser can't decode shows "This source is not browser compatible." There is no
+DRM bypass, server-side download or transcoding.
+
+The Milestone 3 Host Real-Debrid code (`lib/realdebrid/`, `POST /api/resolve`) is
+kept isolated but is not part of the UI; it does nothing unless `REAL_DEBRID_TOKEN` is set.
 
 ## Local setup
 
@@ -71,7 +88,7 @@ any Real-Debrid token in a `NEXT_PUBLIC_` variable.
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | browser | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Supabase anon key (Realtime only) |
-| `REAL_DEBRID_TOKEN` | server only | Host Real-Debrid API token (<https://real-debrid.com/apitoken>) |
+| `REAL_DEBRID_TOKEN` | server only | Optional, unused by the UI (dormant Host Real-Debrid route) |
 
 `.env*` files are git-ignored except `.env.example`.
 
@@ -88,18 +105,21 @@ npm run dev        # dev server
 npm run build      # production build
 npm run lint       # eslint
 npm run typecheck  # tsc --noEmit
-npm test           # unit tests (drift math, clock offset, ids, url handling, Real-Debrid parsing/errors)
-npm run e2e        # two-tab browser sync test (local mode, generates a test clip with ffmpeg)
+npm test           # unit tests (drift math, clock offset, ids, source detection, probe safety, Real-Debrid parsing)
+npm run e2e        # browser suite per source type (local mode, generates test media with ffmpeg)
 ```
 
 `npm run e2e` needs `ffmpeg` and Playwright's Chromium (`npx playwright install chromium`
 if you don't have it). Set `CHROMIUM_PATH` to use a specific Chromium binary.
+The suite answers YouTube's and Vimeo's script URLs with stand-ins
+(`tests/e2e/fakes/`) that implement the same API on the test clip; set
+`E2E_REAL_PROVIDERS=1` to load the real ones. Test media is VP9/Opus because
+Playwright's Chromium has no H.264.
 
 ## Playback compatibility
 
-Native `<video>` is used first; `hls.js` is loaded only for `.m3u8` streams in browsers
-without native HLS. Sources the browser can't decode (e.g. many MKV/HEVC/TrueHD files)
-show **"This source is not browser compatible."** Transcoding is out of scope for V1.
+Sources the browser can't decode (e.g. many MKV/HEVC/TrueHD files) show
+**"This source is not browser compatible."** Transcoding is out of scope for V1.
 
 ## Security notes
 

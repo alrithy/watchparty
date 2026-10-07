@@ -3,29 +3,53 @@ import { expect, test as base, type Browser, type BrowserContext, type Page } fr
 
 const CLIP = "/__test__/clip.webm";
 
+const TYPES: Record<string, string> = {
+  webm: "video/webm",
+  mp4: "video/mp4",
+  m3u8: "application/vnd.apple.mpegurl",
+  mpd: "application/dash+xml",
+  m4s: "video/iso.segment",
+};
+
 /**
- * The test clip isn't deployed, so remote runs serve it from disk (with Range
- * support, which seeking needs). Every context also reports browser console
- * errors so live runs surface them.
+ * YouTube and Vimeo are unreachable from the test sandbox, so their official
+ * script URLs are answered with stand-ins that implement the same API on top of
+ * the test clip. Remote runs also serve the (undeployed) test media from disk,
+ * with Range support, which seeking needs. Browser errors are reported.
  */
 async function prepareContext(ctx: BrowserContext) {
   ctx.on("weberror", (e) => console.log(`[browser error] ${e.error().message}`));
   ctx.on("console", (m) => {
     if (m.type() === "error") console.log(`[console.error] ${m.text()}`);
   });
+  if (!process.env.E2E_REAL_PROVIDERS) {
+    await ctx.route("https://www.youtube.com/iframe_api", (route) =>
+      route.fulfill({ path: "tests/e2e/fakes/youtube-iframe-api.js", contentType: "text/javascript" }),
+    );
+    await ctx.route("https://player.vimeo.com/api/player.js", (route) =>
+      route.fulfill({ path: "tests/e2e/fakes/vimeo-player.js", contentType: "text/javascript" }),
+    );
+  }
   if (!process.env.E2E_BASE_URL) return;
-  const clip = readFileSync("public/__test__/clip.webm");
-  await ctx.route(`**${CLIP}`, (route) => {
+  await ctx.route("**/__test__/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let file: Buffer;
+    try {
+      file = readFileSync(`public${decodeURIComponent(path)}`);
+    } catch {
+      return route.fulfill({ status: 404 });
+    }
     const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers()["range"] ?? "");
     const start = range ? Number(range[1]) : 0;
-    const end = range?.[2] ? Number(range[2]) : clip.length - 1;
+    const end = range?.[2] ? Number(range[2]) : file.length - 1;
+    const ext = /\.(\w+)$/.exec(path)?.[1] ?? "";
     return route.fulfill({
       status: range ? 206 : 200,
-      body: clip.subarray(start, end + 1),
+      body: file.subarray(start, end + 1),
       headers: {
-        "Content-Type": "video/webm",
+        "Content-Type": TYPES[ext] ?? "application/octet-stream",
         "Accept-Ranges": "bytes",
-        ...(range ? { "Content-Range": `bytes ${start}-${end}/${clip.length}` } : {}),
+        ...(range ? { "Content-Range": `bytes ${start}-${end}/${file.length}` } : {}),
       },
     });
   });
@@ -160,7 +184,8 @@ test("unsupported sources show a clear compatibility error", async ({ page }) =>
   await page.goto("/");
   await page.getByTestId("create-room").click();
   await page.waitForURL(/\/room\//);
-  await page.getByTestId("source-url").fill(new URL("/api/time", page.url()).toString());
+  // An image: the probe can't vouch for it, so the HTML5 player tries and fails to decode it.
+  await page.getByTestId("source-url").fill(new URL("/favicon.ico", page.url()).toString());
   await page.getByTestId("load-source").click();
   await expect(page.getByTestId("media-error")).toHaveText(/This source is not browser compatible\./);
 });
@@ -273,92 +298,143 @@ test("pause for everyone while a guest buffers", async ({ context }) => {
   await expect.poll(async () => (await info(guest)).paused, { timeout: 5000 }).toBe(false);
 });
 
-/**
- * Host Real-Debrid through the UI. Real-Debrid itself is stubbed at the
- * browser's /api/resolve call (unless E2E_RD_LINK is set, which runs against the
- * real server route and a real hoster link), so this covers the host flow and
- * the guest streaming the same resolved URL.
- */
-test("host Real-Debrid source plays in sync for host and guest", async ({ browser, context }) => {
-  const realLink = process.env.E2E_RD_LINK;
-  const stub = async (ctx: BrowserContext) => {
-    if (realLink) return;
-    await ctx.route("**/api/resolve", (route) =>
-      route.fulfill({
-        json: {
-          media: {
-            url: new URL(CLIP, route.request().url()).toString(),
-            filename: "clip.webm",
-            mimeType: "video/webm",
-            filesize: null,
-          },
-        },
-      }),
-    );
-  };
-  await stub(context);
+// ---------- Paste-and-play: every source type through the same sync engine ----------
+
+const SOURCES = [
+  { name: "MP4", url: "/__test__/clip.mp4", kind: "file" },
+  { name: "HLS", url: "/__test__/hls/index.m3u8", kind: "hls" },
+  { name: "DASH", url: "/__test__/dash/manifest.mpd", kind: "dash" },
+  { name: "generic CDN URL without extension", url: "/__test__/download", kind: "file" },
+  { name: "YouTube", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", kind: "youtube" },
+  { name: "Vimeo", url: "https://vimeo.com/76979871", kind: "vimeo" },
+] as const;
+
+const absolute = (url: string, page: Page) => new URL(url, page.url()).toString();
+/** Iframe providers correct drift by seeking only, with a wider dead band. */
+const tolerance = (kind: string) => (kind === "youtube" || kind === "vimeo" ? 0.75 : 0.4);
+
+async function paste(host: Page, url: string) {
+  await host.getByTestId("source-url").fill(absolute(url, host));
+  await host.getByTestId("load-source").click();
+}
+
+async function guestPage(browser: Browser, context: BrowserContext) {
+  return (process.env.E2E_SUPABASE ? await newContext(browser) : context).newPage();
+}
+
+for (const src of SOURCES) {
+  test(`${src.name}: host and guest play, pause, seek, correct drift and recover from reloads`, async ({ browser, context }) => {
+    const tol = tolerance(src.kind);
+    const host = await context.newPage();
+    await host.goto("/");
+    await host.getByTestId("create-room").click();
+    await host.waitForURL(/\/room\//);
+    await expectTransport(host);
+    await paste(host, src.url);
+    await expect(host.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
+    await expect.poll(async () => (await info(host)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+
+    const guest = await guestPage(browser, context);
+    await guest.goto(new URL(host.url()).pathname);
+    await expectTransport(guest);
+    await expect(guest.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
+    await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+
+    // Play (for YouTube/Vimeo this drives the provider's own player, like its play button).
+    await video(host).evaluate((v: HTMLVideoElement) => v.play());
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+    await host.waitForTimeout(3000);
+    const playGap = await gap(host, guest);
+    console.log(`${src.name} play gap: ${playGap.toFixed(3)}s`);
+    expect(Math.abs(playGap)).toBeLessThan(tol);
+
+    // Pause
+    await video(host).evaluate((v: HTMLVideoElement) => v.pause());
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 5000 }).toBe(true);
+    await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 5000 }).toBeLessThan(0.3);
+    console.log(`${src.name} pause gap: ${(await gap(host, guest)).toFixed(3)}s`);
+
+    // Seek while paused
+    await video(host).evaluate((v: HTMLVideoElement) => (v.currentTime = 40));
+    await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 8000 }).toBeLessThan(0.3);
+    console.log(`${src.name} seek gap: ${(await gap(host, guest)).toFixed(3)}s`);
+
+    // Resume, then drift: the guest jumps 3s ahead and must be pulled back.
+    await video(host).evaluate((v: HTMLVideoElement) => v.play());
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+    await host.waitForTimeout(1500);
+    await video(guest).evaluate((v: HTMLVideoElement) => (v.currentTime += 3));
+    await expect
+      .poll(async () => Math.abs(await gap(host, guest)), { timeout: 10_000, intervals: [250] })
+      .toBeLessThan(tol);
+    console.log(`${src.name} after drift correction gap: ${(await gap(host, guest)).toFixed(3)}s`);
+
+    // Guest refresh
+    await guest.reload();
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 15_000 }).toBe(false);
+    await expect
+      .poll(async () => Math.abs(await gap(host, guest)), { timeout: 10_000, intervals: [500] })
+      .toBeLessThan(tol);
+    console.log(`${src.name} guest refresh gap: ${(await gap(host, guest)).toFixed(3)}s`);
+
+    // Host refresh: the host restores its own room state and the guest keeps following.
+    await host.reload();
+    await expect(host.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
+    await expect.poll(async () => (await info(host)).paused, { timeout: 15_000 }).toBe(false);
+    await expect
+      .poll(async () => Math.abs(await gap(host, guest)), { timeout: 10_000, intervals: [500] })
+      .toBeLessThan(tol);
+    console.log(`${src.name} host refresh gap: ${(await gap(host, guest)).toFixed(3)}s`);
+  });
+}
+
+test("switching source types in the same room", async ({ browser, context }) => {
   const host = await context.newPage();
   await host.goto("/");
   await host.getByTestId("create-room").click();
   await host.waitForURL(/\/room\//);
   await expectTransport(host);
-  await host.getByTestId("mode-host-rd").check();
-  await host.getByTestId("source-url").fill(realLink ?? "https://hoster.example/file/abc");
-  const resolved = host.waitForResponse("**/api/resolve");
-  await host.getByTestId("load-source").click();
-  expect((await resolved).ok()).toBe(true);
-  await expect(host.getByTestId("media-label")).toContainText("(Real-Debrid)");
-  await expect.poll(async () => (await info(host)).ready, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
-  const src = await video(host).evaluate((v: HTMLVideoElement) => v.currentSrc);
-  // The browser streams straight from the resolved URL, never through our server.
-  if (realLink) expect(new URL(src).hostname).toMatch(/real-debrid\.com$/);
-
-  const guestCtx = process.env.E2E_SUPABASE ? await newContext(browser) : context;
-  const guest = await guestCtx.newPage();
+  const guest = await guestPage(browser, context);
   await guest.goto(new URL(host.url()).pathname);
   await expectTransport(guest);
-  await expect(guest.getByTestId("media-label")).toContainText("(Real-Debrid)");
-  expect(await video(guest).evaluate((v: HTMLVideoElement) => v.currentSrc)).toBe(src);
-  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 30_000 });
 
-  await video(host).evaluate((v: HTMLVideoElement) => v.play());
-  await expect.poll(async () => (await info(guest)).paused, { timeout: 15_000 }).toBe(false);
-  await host.waitForTimeout(3000);
-  const playGap = await gap(host, guest);
-  console.log(`host-rd play gap: ${playGap.toFixed(3)}s`);
-  expect(Math.abs(playGap)).toBeLessThan(0.5);
-
-  await video(host).evaluate((v: HTMLVideoElement) => v.pause());
-  await expect.poll(async () => (await info(guest)).paused).toBe(true);
-  await video(host).evaluate((v: HTMLVideoElement) => (v.currentTime = 30));
-  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 10_000 }).toBeLessThan(0.25);
-  console.log(`host-rd seek gap: ${(await gap(host, guest)).toFixed(3)}s`);
-
-  await guest.reload();
-  await expect(guest.getByTestId("media-label")).toContainText("(Real-Debrid)");
-  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 20_000 }).toBeLessThan(0.25);
-  console.log(`host-rd guest reload gap: ${(await gap(host, guest)).toFixed(3)}s`);
+  for (const src of [SOURCES[0], SOURCES[4], SOURCES[1], SOURCES[5], SOURCES[2]]) {
+    await paste(host, src.url);
+    await expect(host.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
+    await expect(guest.getByTestId("stage")).toHaveAttribute("data-kind", src.kind, { timeout: 10_000 });
+    // Exactly one player per page: the previous adapter was torn down.
+    await expect(host.locator('[data-testid="video"]')).toHaveCount(1, { timeout: 10_000 });
+    await expect(guest.locator('[data-testid="video"]')).toHaveCount(1, { timeout: 10_000 });
+    await expect.poll(async () => (await info(host)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+    await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+    await video(host).evaluate((v: HTMLVideoElement) => v.play());
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+    await host.waitForTimeout(3000);
+    const g = await gap(host, guest);
+    console.log(`switch -> ${src.name} gap: ${g.toFixed(3)}s`);
+    expect(Math.abs(g)).toBeLessThan(tolerance(src.kind));
+  }
 });
 
-test("host Real-Debrid errors are shown to the host", async ({ page }) => {
+test("sources that can't be played directly say so", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("create-room").click();
   await page.waitForURL(/\/room\//);
-  await page.getByTestId("mode-host-rd").check();
-  await page.getByTestId("source-url").fill("https://hoster.example/file/dead");
-  if (process.env.E2E_BASE_URL) {
-    // The deployment has a token, so stub the server's answer for a dead link.
-    await page.route("**/api/resolve", (route) =>
-      route.fulfill({
-        status: 422,
-        json: { error: { code: "link_unavailable", message: "This link is dead, expired or unavailable." } },
-      }),
-    );
-  }
-  await page.getByTestId("load-source").click();
-  // Locally there is no REAL_DEBRID_TOKEN, so the real route answers "not configured".
-  await expect(page.getByTestId("source-error")).toHaveText(
-    process.env.E2E_BASE_URL ? /dead, expired or unavailable/ : /isn't configured/,
-  );
+  const cant = "This source can't be played directly.";
+
+  // A web page, not media. Locally the server probes its own page; deployed, a public one.
+  await paste(page, process.env.E2E_BASE_URL ? "https://example.com/" : "/");
+  await expect(page.getByTestId("source-error")).toHaveText(cant);
   await expect(page.getByTestId("media-label")).toHaveText("Nothing loaded.");
+
+  for (const url of ["ftp://example.com/movie.mp4", "https://www.youtube.com/playlist?list=PL0123456789"]) {
+    await paste(page, url);
+    await expect(page.getByTestId("source-error")).toHaveText(cant);
+  }
+
+  // Embedding disabled on YouTube, private on Vimeo.
+  await paste(page, "https://www.youtube.com/watch?v=unembeddabl");
+  await expect(page.getByTestId("media-error")).toHaveText(cant, { timeout: 10_000 });
+  await paste(page, "https://vimeo.com/999999999");
+  await expect(page.getByTestId("media-error")).toHaveText(cant, { timeout: 10_000 });
 });

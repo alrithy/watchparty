@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { decideCorrection, expectedPosition, SEEK_COOLDOWN_MS } from "@/lib/sync/drift";
 import { estimateOffset } from "@/lib/sync/clock";
 import { generateRoomId, isValidRoomId, normalizeRoomId } from "@/lib/room/id";
-import { labelFor, validateMediaUrl } from "@/lib/media/source";
+import { labelFor, resolveSource } from "@/lib/media/source";
 import type { PlaybackState } from "@/lib/room/types";
 
 const state = (p: Partial<PlaybackState>): PlaybackState => ({
@@ -84,9 +84,9 @@ describe("room ids", () => {
 
 describe("media urls", () => {
   it("validates http(s) only", () => {
-    expect(validateMediaUrl("https://a.com/x.mp4")).toBeNull();
-    expect(validateMediaUrl("javascript:alert(1)")).not.toBeNull();
-    expect(validateMediaUrl("not a url")).not.toBeNull();
+    expect(resolveSource("https://a.com/x.mp4").ok).toBe(true);
+    expect(resolveSource("javascript:alert(1)").ok).toBe(false);
+    expect(resolveSource("not a url").ok).toBe(false);
   });
   it("labels without query strings", () => {
     expect(labelFor("https://cdn.example.com/dl/Movie%20One.mp4?token=secret")).toBe(

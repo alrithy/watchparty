@@ -6,7 +6,7 @@ const remote = process.env.E2E_BASE_URL;
 
 export default defineConfig({
   testDir: "tests/e2e",
-  timeout: 90_000,
+  timeout: 120_000,
   workers: 1,
   globalSetup: "./tests/e2e/global-setup.ts",
   use: {
@@ -25,9 +25,9 @@ export default defineConfig({
     timeout: 180_000,
     // Local (BroadcastChannel) mode by default so tests don't depend on a Supabase project.
     // E2E_SUPABASE=1 keeps the Supabase env vars and runs the same suite over Realtime.
-    // Local servers never get a Real-Debrid token; the Host RD test stubs /api/resolve.
+    // The probe normally refuses private addresses; the local suite serves its media from localhost.
     env: process.env.E2E_SUPABASE
-      ? { REAL_DEBRID_TOKEN: "" }
-      : { NEXT_PUBLIC_SUPABASE_URL: "", NEXT_PUBLIC_SUPABASE_ANON_KEY: "", REAL_DEBRID_TOKEN: "" },
+      ? { PROBE_ALLOW_PRIVATE: "1" }
+      : { NEXT_PUBLIC_SUPABASE_URL: "", NEXT_PUBLIC_SUPABASE_ANON_KEY: "", PROBE_ALLOW_PRIVATE: "1" },
   },
 });
