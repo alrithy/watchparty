@@ -185,6 +185,10 @@ test("host and guest stay in sync across play, pause, seek, drift and reloads", 
   await host.waitForTimeout(1000);
   await video(host).evaluate((v: HTMLVideoElement) => (v.currentTime = 10));
   await host.waitForTimeout(2500);
+  // A seek into unbuffered media has to download first, so give the guest time to land.
+  await expect
+    .poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] })
+    .toBeLessThan(0.35);
   const seekGap = await gap(host, guest);
   console.log(`seek-while-playing gap: ${seekGap.toFixed(3)}s`);
   expect(Math.abs(seekGap)).toBeLessThan(0.35);
@@ -229,7 +233,10 @@ test("unsupported sources show a clear compatibility error", async ({ page }) =>
   await page.getByTestId("create-room").click();
   await page.waitForURL(/\/room\//);
   // An image: the probe can't vouch for it, so the HTML5 player tries and fails to decode it.
-  await page.getByTestId("source-url").fill(new URL("/favicon.ico", page.url()).toString());
+  await page.route("https://files.example.test/clip", (route) =>
+    route.fulfill({ body: "GIF89a", headers: { "Content-Type": "application/octet-stream" } }),
+  );
+  await page.getByTestId("source-url").fill("https://files.example.test/clip");
   await page.getByTestId("load-source").click();
   await expect(page.getByTestId("media-error")).toHaveText(/This source is not browser compatible\./);
 });
