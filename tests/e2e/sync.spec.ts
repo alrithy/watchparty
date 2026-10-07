@@ -468,7 +468,10 @@ test("switching source types in the same room", async ({ browser, context }) => 
   await guest.goto(new URL(host.url()).pathname);
   await expectTransport(guest);
 
-  for (const src of [SOURCES[0], SOURCES[4], SOURCES[1], SOURCES[5], SOURCES[2]]) {
+  // Live runs come from datacenter IPs, where real YouTube/Vimeo refuse to play; switch across the
+  // five direct source types there instead.
+  const order = process.env.E2E_LIVE_SOURCES ? [0, 1, 2, 6, 3] : [0, 4, 1, 5, 2];
+  for (const src of order.map((i) => SOURCES[i])) {
     await paste(host, src.url);
     await expect(host.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
     await expect(guest.getByTestId("stage")).toHaveAttribute("data-kind", src.kind, { timeout: 10_000 });
