@@ -352,6 +352,12 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, isHost, stageRef]);
 
+  // Debug/test handle: lets browser tests drive whichever player is active, including
+  // cross-origin provider iframes. Exposes nothing the page doesn't already have.
+  useEffect(() => {
+    (window as unknown as { __watchparty?: unknown }).__watchparty = { player: () => playerRef.current };
+  }, []);
+
   // Host heartbeat: re-anchor the reference so followers never extrapolate for long.
   useEffect(() => {
     if (!isHost) return;

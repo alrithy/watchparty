@@ -71,13 +71,56 @@ async function newContext(browser: Browser) {
 
 type VideoInfo = { t: number; paused: boolean; rate: number; ready: number };
 
-const info = (page: Page) =>
-  page.locator('[data-testid="video"]').evaluate((v: HTMLVideoElement): VideoInfo => ({
-    t: v.currentTime,
-    paused: v.paused,
-    rate: v.playbackRate,
-    ready: v.readyState,
-  }));
+/**
+ * With the real YouTube/Vimeo players the <video> sits in a cross-origin iframe,
+ * so live runs read and drive the app's active PlayerAdapter instead.
+ */
+const VIA_ADAPTER = Boolean(process.env.E2E_REAL_PROVIDERS);
+type Adapter = {
+  currentTime(): number;
+  playing(): boolean;
+  rate(): number;
+  ready(): boolean;
+  canContinue(): boolean;
+  play(): Promise<void>;
+  pause(): void;
+  seek(s: number): void;
+};
+
+const info = (page: Page): Promise<VideoInfo> =>
+  VIA_ADAPTER
+    ? page.evaluate(() => {
+        const p = (window as unknown as { __watchparty?: { player(): Adapter | null } }).__watchparty?.player();
+        if (!p) return { t: 0, paused: true, rate: 1, ready: 0 };
+        return { t: p.currentTime(), paused: !p.playing(), rate: p.rate(), ready: p.ready() ? (p.canContinue() ? 4 : 1) : 0 };
+      })
+    : page.locator('[data-testid="video"]').evaluate((v: HTMLVideoElement): VideoInfo => ({
+        t: v.currentTime,
+        paused: v.paused,
+        rate: v.playbackRate,
+        ready: v.readyState,
+      }));
+
+/** Play/pause/seek like a person using the player's own controls. */
+async function act(page: Page, action: "play" | "pause" | { seek: number } | { nudge: number }) {
+  if (VIA_ADAPTER) {
+    await page.evaluate((a) => {
+      const p = (window as unknown as { __watchparty?: { player(): Adapter | null } }).__watchparty?.player();
+      if (!p) throw new Error("no player");
+      if (a === "play") void p.play().catch(() => {});
+      else if (a === "pause") p.pause();
+      else if ("seek" in a) p.seek(a.seek);
+      else p.seek(p.currentTime() + a.nudge);
+    }, action);
+    return;
+  }
+  await page.locator('[data-testid="video"]').evaluate((v: HTMLVideoElement, a) => {
+    if (a === "play") void v.play();
+    else if (a === "pause") v.pause();
+    else if ("seek" in a) v.currentTime = a.seek;
+    else v.currentTime += a.nudge;
+  }, action);
+}
 
 /** Sample both tabs back to back and return host - guest. */
 async function gap(host: Page, guest: Page) {
@@ -300,7 +343,22 @@ test("pause for everyone while a guest buffers", async ({ context }) => {
 
 // ---------- Paste-and-play: every source type through the same sync engine ----------
 
-const SOURCES = [
+/** E2E_LIVE_SOURCES=1 swaps the local fixtures for public media (needs open internet). */
+const LIVE_SOURCES = [
+  { name: "MP4", url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", kind: "file" },
+  { name: "HLS", url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8", kind: "hls" },
+  { name: "DASH", url: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd", kind: "dash" },
+  {
+    name: "generic CDN URL without extension",
+    url: "https://httpbin.org/redirect-to?url=https%3A%2F%2Fcommondatastorage.googleapis.com%2Fgtv-videos-bucket%2Fsample%2FElephantsDream.mp4",
+    kind: "file",
+  },
+  { name: "YouTube", url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", kind: "youtube" },
+  { name: "Vimeo", url: "https://vimeo.com/76979871", kind: "vimeo" },
+  { name: "WebM", url: "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.360p.webm", kind: "file" },
+] as const;
+
+const FIXTURE_SOURCES = [
   { name: "MP4", url: "/__test__/clip.mp4", kind: "file" },
   { name: "HLS", url: "/__test__/hls/index.m3u8", kind: "hls" },
   { name: "DASH", url: "/__test__/dash/manifest.mpd", kind: "dash" },
@@ -308,6 +366,8 @@ const SOURCES = [
   { name: "YouTube", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", kind: "youtube" },
   { name: "Vimeo", url: "https://vimeo.com/76979871", kind: "vimeo" },
 ] as const;
+
+const SOURCES = process.env.E2E_LIVE_SOURCES ? LIVE_SOURCES : FIXTURE_SOURCES;
 
 const absolute = (url: string, page: Page) => new URL(url, page.url()).toString();
 /** Iframe providers correct drift by seeking only, with a wider dead band. */
@@ -341,7 +401,7 @@ for (const src of SOURCES) {
     await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
 
     // Play (for YouTube/Vimeo this drives the provider's own player, like its play button).
-    await video(host).evaluate((v: HTMLVideoElement) => v.play());
+    await act(host, "play");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
     await host.waitForTimeout(3000);
     const playGap = await gap(host, guest);
@@ -349,21 +409,21 @@ for (const src of SOURCES) {
     expect(Math.abs(playGap)).toBeLessThan(tol);
 
     // Pause
-    await video(host).evaluate((v: HTMLVideoElement) => v.pause());
+    await act(host, "pause");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 5000 }).toBe(true);
     await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 5000 }).toBeLessThan(0.3);
     console.log(`${src.name} pause gap: ${(await gap(host, guest)).toFixed(3)}s`);
 
     // Seek while paused
-    await video(host).evaluate((v: HTMLVideoElement) => (v.currentTime = 40));
+    await act(host, { seek: 40 });
     await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 8000 }).toBeLessThan(0.3);
     console.log(`${src.name} seek gap: ${(await gap(host, guest)).toFixed(3)}s`);
 
     // Resume, then drift: the guest jumps 3s ahead and must be pulled back.
-    await video(host).evaluate((v: HTMLVideoElement) => v.play());
+    await act(host, "play");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
     await host.waitForTimeout(1500);
-    await video(guest).evaluate((v: HTMLVideoElement) => (v.currentTime += 3));
+    await act(guest, { nudge: 3 });
     await expect
       .poll(async () => Math.abs(await gap(host, guest)), { timeout: 10_000, intervals: [250] })
       .toBeLessThan(tol);
@@ -403,11 +463,12 @@ test("switching source types in the same room", async ({ browser, context }) => 
     await expect(host.getByTestId("stage")).toHaveAttribute("data-kind", src.kind);
     await expect(guest.getByTestId("stage")).toHaveAttribute("data-kind", src.kind, { timeout: 10_000 });
     // Exactly one player per page: the previous adapter was torn down.
-    await expect(host.locator('[data-testid="video"]')).toHaveCount(1, { timeout: 10_000 });
-    await expect(guest.locator('[data-testid="video"]')).toHaveCount(1, { timeout: 10_000 });
+    const players = VIA_ADAPTER ? '[data-testid="video"], [data-testid="provider-player"]' : '[data-testid="video"]';
+    await expect(host.locator(players)).toHaveCount(1, { timeout: 10_000 });
+    await expect(guest.locator(players)).toHaveCount(1, { timeout: 10_000 });
     await expect.poll(async () => (await info(host)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
     await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
-    await video(host).evaluate((v: HTMLVideoElement) => v.play());
+    await act(host, "play");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
     await host.waitForTimeout(3000);
     const g = await gap(host, guest);
