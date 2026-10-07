@@ -30,10 +30,23 @@ export type RoomSettings = {
   pauseOnBuffer: boolean;
 };
 
+/** Subtitles the host added; everyone renders the same cues with the same offset. */
+export type SubtitleTrack = {
+  /** Changes whenever the host loads a different file. */
+  id: string;
+  /** File name or URL host, for display. */
+  name: string;
+  /** The subtitle text, deflated and base64-encoded (see lib/subtitles/pack). */
+  data: string;
+  /** Seconds added to every cue: positive shows subtitles later. */
+  offset: number;
+};
+
 export type RoomSnapshot = {
   media: MediaSource | null;
   state: PlaybackState | null;
   settings: RoomSettings;
+  subtitles?: SubtitleTrack | null;
 };
 
 export type Role = "host" | "guest";

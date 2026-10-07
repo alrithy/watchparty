@@ -6,14 +6,18 @@ import type { PresenceInfo, Role } from "@/lib/room/types";
 import type { PlayerAdapter } from "@/lib/player/types";
 import { useWatchParty } from "@/components/useWatchParty";
 import { prepareSource } from "@/lib/media/prepare";
+import { SubtitleControls, SubtitleOverlay } from "@/components/Subtitles";
 
 type Props = { roomId: string; clientId: string; role: Role };
 
 export default function RoomView({ roomId, clientId, role }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
+  // Fullscreen takes the player and the subtitle layer together.
+  const screenRef = useRef<HTMLDivElement>(null);
   const isHost = role === "host";
   const room = useWatchParty({ roomId, clientId, role, stageRef });
   const { media, mediaError } = room;
+  const [showSubtitles, setShowSubtitles] = useState(true);
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-6">
@@ -36,9 +40,14 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         </p>
       )}
 
-      <div className="relative overflow-hidden rounded-lg bg-black">
+      <div
+        ref={screenRef}
+        data-testid="screen"
+        className="relative overflow-hidden rounded-lg bg-black [&:fullscreen]:flex [&:fullscreen]:items-center [&:fullscreen]:rounded-none"
+      >
         {/* The player adapter renders its <video> or provider iframe in here. */}
-        <div ref={stageRef} data-testid="stage" data-kind={media?.kind ?? ""} />
+        <div ref={stageRef} data-testid="stage" data-kind={media?.kind ?? ""} className="w-full" />
+        <SubtitleOverlay track={room.subtitles} playerRef={room.playerRef} visible={showSubtitles} />
         {!media && <div className="aspect-video w-full" />}
         {!media && (
           <Overlay>{isHost ? "Paste a link below to start." : "Waiting for the host to pick something to watch…"}</Overlay>
@@ -61,7 +70,7 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         )}
       </div>
 
-      {!isHost && <GuestControls playerRef={room.playerRef} stageRef={stageRef} />}
+      <PlayerBar isHost={isHost} playerRef={room.playerRef} screenRef={screenRef} />
 
       <section className="grid gap-4 md:grid-cols-3">
         <Panel title="Participants">
@@ -108,6 +117,17 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         <p className="mt-2 truncate text-sm text-zinc-400" data-testid="media-label">
           {media ? `Now: ${media.label}` : "Nothing loaded."}
         </p>
+        {media && (isHost || room.subtitles) && (
+          <div className="mt-3 border-t border-zinc-800 pt-3">
+            <SubtitleControls
+              isHost={isHost}
+              track={room.subtitles}
+              onChange={room.setSubtitles}
+              visible={showSubtitles}
+              onToggle={() => setShowSubtitles((v) => !v)}
+            />
+          </div>
+        )}
       </Panel>
     </main>
   );
@@ -151,46 +171,63 @@ function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["load
   );
 }
 
-function GuestControls({
+/** Local controls under the player: guests get volume (the host uses the player's own), everyone gets fullscreen. */
+function PlayerBar({
+  isHost,
   playerRef,
-  stageRef,
+  screenRef,
 }: {
+  isHost: boolean;
   playerRef: React.RefObject<PlayerAdapter | null>;
-  stageRef: React.RefObject<HTMLDivElement | null>;
+  screenRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
+  const btn = "rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400";
+  const fullscreen = () => {
+    const el = screenRef.current as (HTMLDivElement & { webkitRequestFullscreen?: () => void }) | null;
+    if (!el) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else if (el.requestFullscreen) void el.requestFullscreen().catch(() => {});
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else {
+      // iPhone Safari only lets the <video> itself go fullscreen (our subtitle layer can't follow).
+      const v = el.querySelector("video") as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
+      v?.webkitEnterFullscreen?.();
+    }
+  };
   return (
-    <div className="flex items-center gap-3 text-sm text-zinc-300">
-      <button
-        className="rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400"
-        onClick={() => {
-          playerRef.current?.setMuted(!muted);
-          setMuted(!muted);
-        }}
-      >
-        {muted ? "Unmute" : "Mute"}
-      </button>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.05}
-        value={volume}
-        aria-label="Volume"
-        onChange={(e) => {
-          const next = Number(e.target.value);
-          playerRef.current?.setVolume(next);
-          setVolume(next);
-        }}
-      />
-      <button
-        className="rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400"
-        onClick={() => void stageRef.current?.requestFullscreen?.()}
-      >
+    <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
+      {!isHost && (
+        <>
+          <button
+            className={btn}
+            onClick={() => {
+              playerRef.current?.setMuted(!muted);
+              setMuted(!muted);
+            }}
+          >
+            {muted ? "Unmute" : "Mute"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume}
+            aria-label="Volume"
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              playerRef.current?.setVolume(next);
+              setVolume(next);
+            }}
+          />
+        </>
+      )}
+      <button className={btn} onClick={fullscreen} data-testid="fullscreen">
         Fullscreen
       </button>
-      <span className="text-zinc-500">The host controls playback.</span>
+      {!isHost && <span className="text-zinc-500">The host controls playback.</span>}
     </div>
   );
 }

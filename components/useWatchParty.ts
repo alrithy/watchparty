@@ -9,6 +9,7 @@ import type {
   Role,
   RoomSettings,
   RoomSnapshot,
+  SubtitleTrack,
 } from "@/lib/room/types";
 import { createTransport, type ConnectionStatus, type RoomTransport } from "@/lib/realtime/transport";
 import { createPlayer } from "@/lib/player/create";
@@ -31,7 +32,12 @@ type Options = {
   stageRef: RefObject<HTMLDivElement | null>;
 };
 
-type HostSession = { media: MediaSource | null; state: PlaybackState | null; settings: RoomSettings };
+type HostSession = {
+  media: MediaSource | null;
+  state: PlaybackState | null;
+  settings: RoomSettings;
+  subtitles?: SubtitleTrack | null;
+};
 
 const sessionKey = (roomId: string) => `watchparty:session:${roomId}`;
 
@@ -62,6 +68,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
   const [media, setMedia] = useState<MediaSource | null>(restored?.media ?? null);
   const [playback, setPlayback] = useState<PlaybackState | null>(restored?.state ?? null);
   const [settings, setSettings] = useState<RoomSettings>(restored?.settings ?? { pauseOnBuffer: false });
+  const [subtitles, setSubtitlesState] = useState<SubtitleTrack | null>(restored?.subtitles ?? null);
   const [participants, setParticipants] = useState<PresenceInfo[]>([]);
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [status, setStatus] = useState<ParticipantStatus>("idle");
@@ -77,6 +84,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
   const stateRef = useRef<PlaybackState | null>(restored?.state ?? null);
   const mediaRef = useRef<MediaSource | null>(restored?.media ?? null);
   const settingsRef = useRef(settings);
+  const subtitlesRef = useRef<SubtitleTrack | null>(restored?.subtitles ?? null);
   const gotSnapshotRef = useRef(false);
   const statusRef = useRef<ParticipantStatus>("idle");
   const driftRef = useRef<number | null>(null);
@@ -89,6 +97,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
       media: mediaRef.current,
       state: stateRef.current,
       settings: settingsRef.current,
+      subtitles: subtitlesRef.current,
     });
   }, [isHost, roomId]);
 
@@ -116,6 +125,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
       media: mediaRef.current,
       state: stateRef.current,
       settings: settingsRef.current,
+      subtitles: subtitlesRef.current,
     }),
     [],
   );
@@ -168,6 +178,9 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
       restorePendingRef.current = false;
       mediaRef.current = source;
       setMedia(source);
+      // Subtitles belong to the previous video.
+      subtitlesRef.current = null;
+      setSubtitlesState(null);
       needsGestureRef.current = false;
       setNeedsGesture(false);
       const now = clockRef.current.now();
@@ -198,6 +211,18 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
     [isHost, persist, snapshot],
   );
 
+  /** Host: add, replace, retime or remove the room's subtitles. */
+  const setSubtitles = useCallback(
+    (next: SubtitleTrack | null) => {
+      if (!isHost) return;
+      subtitlesRef.current = next;
+      setSubtitlesState(next);
+      persist();
+      transportRef.current?.send("snapshot", snapshot());
+    },
+    [isHost, persist, snapshot],
+  );
+
   // ---------- Guest: accept authoritative state ----------
   const acceptState = useCallback((next: PlaybackState | null) => {
     if (!next) return;
@@ -220,6 +245,12 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
       }
       settingsRef.current = snap.settings;
       setSettings(snap.settings);
+      const subs = snap.subtitles ?? null;
+      const cur = subtitlesRef.current;
+      if (subs?.id !== cur?.id || subs?.offset !== cur?.offset) {
+        subtitlesRef.current = subs;
+        setSubtitlesState(subs);
+      }
       acceptState(snap.state);
     },
     [acceptState],
@@ -507,6 +538,8 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
     playerRef,
     hostPresent,
     loadMedia,
+    subtitles,
+    setSubtitles,
     updateSettings,
     updateStatus,
     resumeWithGesture,

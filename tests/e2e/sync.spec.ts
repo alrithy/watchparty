@@ -505,3 +505,61 @@ test("sources that can't be played directly say so", async ({ page }) => {
   await paste(page, "https://vimeo.com/999999999");
   await expect(page.getByTestId("media-error")).toHaveText(cant, { timeout: 10_000 });
 });
+
+const SRT = [
+  "1\n00:00:00,000 --> 00:00:10,000\nمرحبا بكم في الحفلة\n",
+  "2\n00:00:10,000 --> 00:00:20,000\n<i>Second line</i>\n",
+].join("\n");
+const VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:30.000\n<v Host>From a link</v>\n";
+
+test("subtitles: upload, link, RTL, delay and hide are shared with guests", async ({ browser, context }) => {
+  const host = await context.newPage();
+  const roomUrl = await hostRoom(host);
+  const guest = await guestPage(browser, context);
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+
+  // Upload an Arabic SRT; both sides show it, right-to-left.
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+  await expect(host.getByTestId("subtitle-name")).toHaveText("arabic.srt");
+  await act(host, { seek: 5 });
+  for (const page of [host, guest]) {
+    const line = page.getByTestId("subtitle-text").locator("p");
+    await expect(line).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+    expect(await line.evaluate((p) => getComputedStyle(p).direction)).toBe("rtl");
+  }
+
+  // Seek past the first cue, then delay subtitles by 0.5 s: the first cue shows again for everyone.
+  await act(host, { seek: 10.2 });
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("Second line", { timeout: 10_000 });
+  await host.getByTestId("subtitle-later").click();
+  await expect(guest.getByTestId("subtitle-offset")).toHaveText("+0.5s");
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+
+  // Hiding is local to each viewer.
+  await guest.getByTestId("subtitle-toggle").click();
+  await expect(guest.getByTestId("subtitle-text")).toHaveCount(0);
+  await expect(host.getByTestId("subtitle-text")).toHaveCount(1);
+  await guest.getByTestId("subtitle-toggle").click();
+
+  // A WebVTT link (fetched by the host's browser) replaces the file.
+  for (const ctx of new Set([host.context(), guest.context()])) {
+    await ctx.route("https://subs.example.test/**", (route) =>
+      route.fulfill({ body: VTT, headers: { "Content-Type": "text/vtt", "Access-Control-Allow-Origin": "*" } }),
+    );
+  }
+  await host.getByTestId("subtitle-url").fill("https://subs.example.test/movie.vtt");
+  await host.getByTestId("subtitle-load").click();
+  await expect(guest.getByTestId("subtitle-name")).toHaveText("movie.vtt");
+  await expect(guest.getByTestId("subtitle-offset")).toHaveText("0.0s");
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("From a link", { timeout: 10_000 });
+
+  // A late joiner gets the subtitles too.
+  const late = await guestPage(browser, context);
+  await late.goto(roomUrl);
+  await expect(late.getByTestId("subtitle-text")).toHaveText("From a link", { timeout: 15_000 });
+
+  // Not a subtitle file.
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "notes.srt", mimeType: "text/plain", buffer: Buffer.from("hello") });
+  await expect(host.getByTestId("subtitle-error")).toContainText("No subtitles found");
+});

@@ -118,7 +118,7 @@ async function readHead(res: Response): Promise<string> {
 }
 
 /** Follows redirects manually so every hop is checked against private addresses. */
-async function request(start: URL, method: "HEAD" | "GET", opts: Options, signal: AbortSignal) {
+async function request(start: URL, method: "HEAD" | "GET", opts: Options, signal: AbortSignal, ranged = true) {
   let url = start;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (!(await assertPublic(url, opts))) return null;
@@ -127,7 +127,7 @@ async function request(start: URL, method: "HEAD" | "GET", opts: Options, signal
       redirect: "manual",
       signal,
       cache: "no-store",
-      headers: method === "GET" ? { Range: `bytes=0-${SNIFF_BYTES - 1}` } : {},
+      headers: method === "GET" && ranged ? { Range: `bytes=0-${SNIFF_BYTES - 1}` } : {},
     });
     const location = res.headers.get("location");
     if (res.status >= 300 && res.status < 400 && location) {
@@ -170,5 +170,58 @@ export async function probeUrl(input: string, opts: Options = {}): Promise<Probe
     return classify(get.headers.get("content-type"), get.headers.get("content-disposition"), sniff);
   } catch {
     return { result: "unknown" };
+  }
+}
+
+/**
+ * Fetches a small text file (subtitles) for a browser whose own fetch was
+ * blocked by CORS. Same address guard as the probe; refuses anything larger
+ * than `maxBytes`, so this never relays media.
+ */
+export async function fetchSmallFile(
+  input: string,
+  maxBytes: number,
+  opts: Options = {},
+): Promise<{ ok: true; bytes: ArrayBuffer } | { ok: false; error: string }> {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return { ok: false, error: "That link isn't valid." };
+  }
+  try {
+    const res = await request(url, "GET", opts, AbortSignal.timeout(TIMEOUT_MS), false);
+    if (!res) return { ok: false, error: "That link can't be fetched." };
+    if (!res.ok) {
+      void res.body?.cancel().catch(() => {});
+      return { ok: false, error: `The server answered ${res.status}.` };
+    }
+    const length = Number(res.headers.get("content-length") ?? 0);
+    if (length > maxBytes) {
+      void res.body?.cancel().catch(() => {});
+      return { ok: false, error: "That file is too large for subtitles." };
+    }
+    const reader = res.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      total += value.length;
+      if (total > maxBytes) {
+        void reader.cancel().catch(() => {});
+        return { ok: false, error: "That file is too large for subtitles." };
+      }
+      chunks.push(value);
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) {
+      out.set(c, at);
+      at += c.length;
+    }
+    return { ok: true, bytes: out.buffer };
+  } catch {
+    return { ok: false, error: "That link can't be fetched." };
   }
 }
