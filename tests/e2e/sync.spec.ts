@@ -189,8 +189,9 @@ test("host and guest stay in sync across play, pause, seek, drift and reloads", 
   console.log(`seek-while-playing gap: ${seekGap.toFixed(3)}s`);
   expect(Math.abs(seekGap)).toBeLessThan(0.35);
 
-  // Minor drift: guest jumps 0.8s ahead -> playbackRate correction, no seek.
-  await video(guest).evaluate((v: HTMLVideoElement) => (v.currentTime += 0.8));
+  // Minor drift: guest jumps 0.45s ahead -> playbackRate correction, no seek.
+  // (Past ~0.5s with the target buffered, the guest seeks instead; see "Major drift" below.)
+  await video(guest).evaluate((v: HTMLVideoElement) => (v.currentTime += 0.45));
   await expect.poll(async () => (await info(guest)).rate, { timeout: 2000 }).toBeLessThan(1);
   await expect
     .poll(async () => Math.abs(await gap(host, guest)), { timeout: 30_000, intervals: [500] })

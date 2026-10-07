@@ -495,7 +495,9 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
             retried = false;
           }
         }
-        const c = decideCorrection(d, correcting, now - lastSeekAt, canNudgeRate);
+        // Seeking into what's already buffered is instant and exact; allow a second of playback after it.
+        const buffered = p.isBuffered?.(expected + p.seekLead + extraLead + 1) ?? false;
+        const c = decideCorrection(d, correcting, now - lastSeekAt, canNudgeRate, buffered);
         if (c.action === "seek") {
           seekTo(p, expected + p.seekLead, now);
         } else if (p.setRate(c.rate)) {

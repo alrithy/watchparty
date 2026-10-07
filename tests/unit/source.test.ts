@@ -167,3 +167,16 @@ describe("decideCorrection without rate control", () => {
     expect(decideCorrection(0.5, false, 10_000, true).action).toBe("rate");
   });
 });
+
+describe("decideCorrection when the target is buffered", () => {
+  it("seeks instead of nudging once drift passes the buffered threshold", () => {
+    expect(decideCorrection(0.45, false, 10_000, true, true).action).toBe("rate");
+    expect(decideCorrection(0.6, false, 10_000, true, true).action).toBe("seek");
+    // Without a buffered target the same drift is still corrected by rate.
+    expect(decideCorrection(0.6, false, 10_000, true, false).action).toBe("rate");
+  });
+
+  it("still respects the seek cooldown", () => {
+    expect(decideCorrection(0.6, false, 500, true, true).action).toBe("rate");
+  });
+});

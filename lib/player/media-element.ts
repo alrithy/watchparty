@@ -22,6 +22,7 @@ type MediaLike = HTMLElement & {
   readonly ended: boolean;
   readonly seeking: boolean;
   readonly readyState: number;
+  readonly buffered?: TimeRanges;
   readonly videoWidth?: number;
   readonly videoHeight?: number;
   readonly currentSrc?: string;
@@ -314,6 +315,12 @@ export class MediaElementAdapter implements PlayerAdapter {
   }
   error() {
     return this.failure;
+  }
+  isBuffered(seconds: number) {
+    const b = this.el?.buffered;
+    if (this.iframe || !b) return false;
+    for (let i = 0; i < b.length; i++) if (seconds >= b.start(i) && seconds <= b.end(i)) return true;
+    return false;
   }
   /** YouTube only has coarse rate steps (0.25x), so drift is corrected by seeking there. */
   setRate(rate: number) {

@@ -37,6 +37,8 @@ export interface PlayerAdapter {
   /** Not stalled: enough data to keep playing. */
   canContinue(): boolean;
   seeking(): boolean;
+  /** Whether `seconds` is already buffered, so seeking there is instant (optional). */
+  isBuffered?(seconds: number): boolean;
   /** Last fatal error, shown to the user. */
   error(): string | null;
   /** Small rate nudges for drift correction. Returns false where the provider can't do fine-grained rates. */
