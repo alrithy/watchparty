@@ -28,8 +28,8 @@ Small, vertical milestones. Each one is run, tested and committed before the nex
 ## Milestones
 
 1. Two tabs create/join a room and sync a direct MP4. ✅
-2. Verify sync from two separate devices (needs a Supabase project + deploy/tunnel).
+2. Verify sync from two separate devices (needs a Supabase project + deploy/tunnel). ✅
 3. Host Real-Debrid: `lib/realdebrid/{client,resolve,types}.ts`, `POST /api/resolve`
-   using `REAL_DEBRID_TOKEN`, explicit RD error mapping.
+   using `REAL_DEBRID_TOKEN`, explicit RD error mapping. ✅
 4. Guest Real-Debrid: guest pastes their own token, resolved per request, never stored.
 5. Deploy to Vercel and run the end-to-end test on the deployment.

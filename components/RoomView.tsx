@@ -2,13 +2,15 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
-import type { PresenceInfo, Role } from "@/lib/room/types";
+import type { PlaybackMode, PresenceInfo, Role } from "@/lib/room/types";
 import { useWatchParty } from "@/components/useWatchParty";
 import {
   INCOMPATIBLE_MESSAGE,
   describeMediaError,
   isHls,
+  makeHostRdSource,
   makeSource,
+  resolveHostRd,
   validateMediaUrl,
 } from "@/lib/media/source";
 
@@ -203,22 +205,41 @@ export default function RoomView({ roomId, clientId, role }: Props) {
 }
 
 function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["loadMedia"] }) {
+  const [mode, setMode] = useState<PlaybackMode>("direct");
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const submit = (e: FormEvent) => {
+  const [resolving, setResolving] = useState(false);
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (resolving) return;
     const err = validateMediaUrl(url);
     setError(err);
-    if (!err) onLoad(makeSource("direct", url));
+    if (err) return;
+    if (mode === "direct") {
+      onLoad(makeSource("direct", url));
+      return;
+    }
+    setResolving(true);
+    const result = await resolveHostRd(url);
+    setResolving(false);
+    if ("error" in result) setError(result.error);
+    else onLoad(makeHostRdSource(result.media));
   };
   return (
     <form onSubmit={submit} className="space-y-3">
       <div className="flex gap-4 text-sm">
         <label className="flex items-center gap-2">
-          <input type="radio" name="mode" defaultChecked /> Direct URL
+          <input type="radio" name="mode" checked={mode === "direct"} onChange={() => setMode("direct")} /> Direct URL
         </label>
-        <label className="flex items-center gap-2 text-zinc-500" title="Coming in a later milestone">
-          <input type="radio" name="mode" disabled /> Host Real-Debrid (soon)
+        <label className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="mode"
+            data-testid="mode-host-rd"
+            checked={mode === "host-rd"}
+            onChange={() => setMode("host-rd")}
+          />{" "}
+          Host Real-Debrid
         </label>
       </div>
       <div className="flex gap-2">
@@ -226,17 +247,18 @@ function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["load
           data-testid="source-url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://example.com/movie.mp4 or .m3u8"
+          placeholder={mode === "direct" ? "https://example.com/movie.mp4 or .m3u8" : "Hoster link to resolve with Real-Debrid"}
           className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-400"
         />
         <button
           data-testid="load-source"
-          className="rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-white"
+          disabled={resolving}
+          className="rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-white disabled:opacity-60"
         >
-          Load
+          {resolving ? "Resolving…" : "Load"}
         </button>
       </div>
-      {error && <p className="text-sm text-red-300">{error}</p>}
+      {error && <p className="text-sm text-red-300" data-testid="source-error">{error}</p>}
     </form>
   );
 }

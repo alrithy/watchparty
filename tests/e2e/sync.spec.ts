@@ -272,3 +272,93 @@ test("pause for everyone while a guest buffers", async ({ context }) => {
   await expect.poll(async () => (await info(host)).paused, { timeout: 5000 }).toBe(false);
   await expect.poll(async () => (await info(guest)).paused, { timeout: 5000 }).toBe(false);
 });
+
+/**
+ * Host Real-Debrid through the UI. Real-Debrid itself is stubbed at the
+ * browser's /api/resolve call (unless E2E_RD_LINK is set, which runs against the
+ * real server route and a real hoster link), so this covers the host flow and
+ * the guest streaming the same resolved URL.
+ */
+test("host Real-Debrid source plays in sync for host and guest", async ({ browser, context }) => {
+  const realLink = process.env.E2E_RD_LINK;
+  const stub = async (ctx: BrowserContext) => {
+    if (realLink) return;
+    await ctx.route("**/api/resolve", (route) =>
+      route.fulfill({
+        json: {
+          media: {
+            url: new URL(CLIP, route.request().url()).toString(),
+            filename: "clip.webm",
+            mimeType: "video/webm",
+            filesize: null,
+          },
+        },
+      }),
+    );
+  };
+  await stub(context);
+  const host = await context.newPage();
+  await host.goto("/");
+  await host.getByTestId("create-room").click();
+  await host.waitForURL(/\/room\//);
+  await expectTransport(host);
+  await host.getByTestId("mode-host-rd").check();
+  await host.getByTestId("source-url").fill(realLink ?? "https://hoster.example/file/abc");
+  const resolved = host.waitForResponse("**/api/resolve");
+  await host.getByTestId("load-source").click();
+  expect((await resolved).ok()).toBe(true);
+  await expect(host.getByTestId("media-label")).toContainText("(Real-Debrid)");
+  await expect.poll(async () => (await info(host)).ready, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
+  const src = await video(host).evaluate((v: HTMLVideoElement) => v.currentSrc);
+  // The browser streams straight from the resolved URL, never through our server.
+  if (realLink) expect(new URL(src).hostname).toMatch(/real-debrid\.com$/);
+
+  const guestCtx = process.env.E2E_SUPABASE ? await newContext(browser) : context;
+  const guest = await guestCtx.newPage();
+  await guest.goto(new URL(host.url()).pathname);
+  await expectTransport(guest);
+  await expect(guest.getByTestId("media-label")).toContainText("(Real-Debrid)");
+  expect(await video(guest).evaluate((v: HTMLVideoElement) => v.currentSrc)).toBe(src);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 30_000 });
+
+  await video(host).evaluate((v: HTMLVideoElement) => v.play());
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 15_000 }).toBe(false);
+  await host.waitForTimeout(3000);
+  const playGap = await gap(host, guest);
+  console.log(`host-rd play gap: ${playGap.toFixed(3)}s`);
+  expect(Math.abs(playGap)).toBeLessThan(0.5);
+
+  await video(host).evaluate((v: HTMLVideoElement) => v.pause());
+  await expect.poll(async () => (await info(guest)).paused).toBe(true);
+  await video(host).evaluate((v: HTMLVideoElement) => (v.currentTime = 30));
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 10_000 }).toBeLessThan(0.25);
+  console.log(`host-rd seek gap: ${(await gap(host, guest)).toFixed(3)}s`);
+
+  await guest.reload();
+  await expect(guest.getByTestId("media-label")).toContainText("(Real-Debrid)");
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 20_000 }).toBeLessThan(0.25);
+  console.log(`host-rd guest reload gap: ${(await gap(host, guest)).toFixed(3)}s`);
+});
+
+test("host Real-Debrid errors are shown to the host", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("create-room").click();
+  await page.waitForURL(/\/room\//);
+  await page.getByTestId("mode-host-rd").check();
+  await page.getByTestId("source-url").fill("https://hoster.example/file/dead");
+  if (process.env.E2E_BASE_URL) {
+    // The deployment has a token, so stub the server's answer for a dead link.
+    await page.route("**/api/resolve", (route) =>
+      route.fulfill({
+        status: 422,
+        json: { error: { code: "link_unavailable", message: "This link is dead, expired or unavailable." } },
+      }),
+    );
+  }
+  await page.getByTestId("load-source").click();
+  // Locally there is no REAL_DEBRID_TOKEN, so the real route answers "not configured".
+  await expect(page.getByTestId("source-error")).toHaveText(
+    process.env.E2E_BASE_URL ? /dead, expired or unavailable/ : /isn't configured/,
+  );
+  await expect(page.getByTestId("media-label")).toHaveText("Nothing loaded.");
+});

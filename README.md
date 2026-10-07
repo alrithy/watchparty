@@ -3,7 +3,7 @@
 Private, invite-only synchronized video playback for a small group (built for 2,
 designed to allow more). Next.js + TypeScript + Tailwind + Supabase Realtime, deployed on Vercel.
 
-Status: **Milestone 1** (rooms + direct URL sync). See [docs/PLAN.md](docs/PLAN.md).
+Status: **Milestone 3** (rooms, direct URL sync, Host Real-Debrid). See [docs/PLAN.md](docs/PLAN.md).
 
 ## How it works
 
@@ -15,6 +15,27 @@ Status: **Milestone 1** (rooms + direct URL sync). See [docs/PLAN.md](docs/PLAN.
 - Presence shows who is connected and whether they are ready or buffering.
   The host can enable "Pause when a participant buffers".
 - Refresh/reconnect: guests ask the host for the latest state and jump back in.
+
+## Host Real-Debrid
+
+The host picks **Host Real-Debrid**, pastes a hoster link and clicks Load. The
+browser sends only the link to `POST /api/resolve`; the server calls
+`POST https://api.real-debrid.com/rest/1.0/unrestrict/link` with
+`REAL_DEBRID_TOKEN` in the `Authorization` header and returns
+`{ url, filename, mimeType, filesize }`. Host and guests then stream `url`
+directly from Real-Debrid's CDN; no video bytes pass through Vercel.
+
+- If Real-Debrid refuses the request because of an IP restriction (`error_code` 22,
+  e.g. because Vercel runs on cloud IPs), the server retries once with `remote=1`,
+  which uses the account's Remote traffic.
+- Errors are mapped to clear messages: invalid/expired token, account locked,
+  unsupported hoster, dead/unavailable link, hoster down, IP not allowed,
+  traffic exhausted and rate limits (the API allows 250 requests/minute).
+- Logs only ever include hostnames, never the token, the hoster link or the generated link.
+- The route refuses cross-site browser requests. It has no other authentication,
+  so anyone who can reach the deployment could spend the host's account: keep
+  Vercel deployment protection on, or don't set the token on public deployments.
+- Magnet/torrent links and guest Real-Debrid accounts are later milestones.
 
 ## Local setup
 
@@ -50,7 +71,7 @@ any Real-Debrid token in a `NEXT_PUBLIC_` variable.
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | browser | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Supabase anon key (Realtime only) |
-| `REAL_DEBRID_TOKEN` | server only | Host Real-Debrid API token (Milestone 3) |
+| `REAL_DEBRID_TOKEN` | server only | Host Real-Debrid API token (<https://real-debrid.com/apitoken>) |
 
 `.env*` files are git-ignored except `.env.example`.
 
@@ -67,7 +88,7 @@ npm run dev        # dev server
 npm run build      # production build
 npm run lint       # eslint
 npm run typecheck  # tsc --noEmit
-npm test           # unit tests (drift math, clock offset, ids, url handling)
+npm test           # unit tests (drift math, clock offset, ids, url handling, Real-Debrid parsing/errors)
 npm run e2e        # two-tab browser sync test (local mode, generates a test clip with ffmpeg)
 ```
 
@@ -82,8 +103,9 @@ show **"This source is not browser compatible."** Transcoding is out of scope fo
 
 ## Security notes
 
-- Real-Debrid tokens will only ever be read on the server; they never appear in HTML,
-  bundles, Realtime messages, URLs or logs.
+- The Real-Debrid token is only read on the server (`lib/realdebrid/client.ts` imports
+  `server-only`); it never appears in HTML, bundles, Realtime messages, URLs or logs.
+  Only the generated media URL is shared with the room, because guests need it to play.
 - Media labels shown in the UI strip query strings (signed URLs often carry tokens).
 - Room codes are random 6-character codes. Supabase public channels are reachable by
   anyone who knows the code; treat the invite link as the secret.

@@ -1,4 +1,5 @@
 import type { MediaSource, PlaybackMode } from "@/lib/room/types";
+import type { ResolvedMedia } from "@/lib/realdebrid/types";
 
 export function isHls(url: string): boolean {
   try {
@@ -35,6 +36,29 @@ export function labelFor(input: string): string {
 
 export function makeSource(mode: PlaybackMode, url: string): MediaSource {
   return { mode, url: url.trim(), label: labelFor(url.trim()) };
+}
+
+/** Room source for a link the server resolved with the host's Real-Debrid account. */
+export function makeHostRdSource(media: ResolvedMedia): MediaSource {
+  return { mode: "host-rd", url: media.url, label: `${media.filename} (Real-Debrid)` };
+}
+
+/** Asks the server to resolve a hoster link. The Real-Debrid token stays on the server. */
+export async function resolveHostRd(link: string): Promise<{ media: ResolvedMedia } | { error: string }> {
+  try {
+    const res = await fetch("/api/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ link: link.trim() }),
+    });
+    const body = (await res.json().catch(() => null)) as
+      | { media?: ResolvedMedia; error?: { message?: string } }
+      | null;
+    if (res.ok && body?.media) return { media: body.media };
+    return { error: body?.error?.message ?? `Couldn't resolve the link (HTTP ${res.status}).` };
+  } catch {
+    return { error: "Couldn't reach the server. Check your connection and try again." };
+  }
 }
 
 export const INCOMPATIBLE_MESSAGE = "This source is not browser compatible.";

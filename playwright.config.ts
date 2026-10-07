@@ -25,8 +25,9 @@ export default defineConfig({
     timeout: 180_000,
     // Local (BroadcastChannel) mode by default so tests don't depend on a Supabase project.
     // E2E_SUPABASE=1 keeps the Supabase env vars and runs the same suite over Realtime.
+    // Local servers never get a Real-Debrid token; the Host RD test stubs /api/resolve.
     env: process.env.E2E_SUPABASE
-      ? {}
-      : { NEXT_PUBLIC_SUPABASE_URL: "", NEXT_PUBLIC_SUPABASE_ANON_KEY: "" },
+      ? { REAL_DEBRID_TOKEN: "" }
+      : { NEXT_PUBLIC_SUPABASE_URL: "", NEXT_PUBLIC_SUPABASE_ANON_KEY: "", REAL_DEBRID_TOKEN: "" },
   },
 });
