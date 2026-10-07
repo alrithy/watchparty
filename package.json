@@ -15,8 +15,10 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
     "dash-video-element": "0.3.2",
+    "fflate": "0.8.3",
     "hls-video-element": "1.5.11",
     "next": "16.4.0",
+    "parse-torrent-title": "3.0.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "server-only": "^0.0.1",

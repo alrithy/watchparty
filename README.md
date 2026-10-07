@@ -65,6 +65,17 @@ so they work over YouTube/Vimeo as well, right-to-left where the text is. The
 host's delay (±0.5 s steps) applies to everyone; show/hide is per viewer.
 **Fullscreen** under the player keeps the subtitles visible.
 
+**Find Arabic subtitles** (host) searches OpenSubtitles and SubDL from our
+server (`POST /api/subtitles/search`, `POST /api/subtitles/download`). What to
+look for comes from the media file name (parsed by parse-torrent-title), the
+YouTube/Vimeo title (oEmbed), or a title the host types when neither is enough.
+Results are ranked with subliminal's weights (see `docs/OSS_REUSE_AUDIT.md`) and
+each shows its score and why it matched. The best one is applied automatically
+only when it matches the exact release, the IMDb id, title + year, or series +
+season + episode; otherwise the host picks from the top five. A chosen subtitle
+is shared exactly like an uploaded one, so delay, show/hide and late joiners work
+the same. Search is disabled until at least one provider key is set.
+
 The Milestone 3 Host Real-Debrid code (`lib/realdebrid/`, `POST /api/resolve`) is
 kept isolated but is not part of the UI; it does nothing unless `REAL_DEBRID_TOKEN` is set.
 
@@ -103,6 +114,9 @@ any Real-Debrid token in a `NEXT_PUBLIC_` variable.
 | `NEXT_PUBLIC_SUPABASE_URL` | browser | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Supabase anon key (Realtime only) |
 | `REAL_DEBRID_TOKEN` | server only | Optional, unused by the UI (dormant Host Real-Debrid route) |
+| `OPENSUBTITLES_API_KEY` | server only | Enables OpenSubtitles in "Find Arabic subtitles" (free consumer key from opensubtitles.com) |
+| `OPENSUBTITLES_USERNAME`, `OPENSUBTITLES_PASSWORD` | server only | Optional; logging in raises the daily download quota |
+| `SUBDL_API_KEY` | server only | Enables SubDL in "Find Arabic subtitles" (subdl.com account) |
 
 `.env*` files are git-ignored except `.env.example`.
 
@@ -140,6 +154,10 @@ Sources the browser can't decode (e.g. many MKV/HEVC/TrueHD files) show
 - The Real-Debrid token is only read on the server (`lib/realdebrid/client.ts` imports
   `server-only`); it never appears in HTML, bundles, Realtime messages, URLs or logs.
   Only the generated media URL is shared with the room, because guests need it to play.
+- Subtitle provider keys are read only in `lib/subtitles/search/` (`server-only`). The
+  OpenSubtitles key goes in a request header; signed download links are fetched on the
+  server and never returned, logged or shared. Search sends only the media file name,
+  never its query string.
 - Media labels shown in the UI strip query strings (signed URLs often carry tokens).
 - Room codes are random 6-character codes. Supabase public channels are reachable by
   anyone who knows the code; treat the invite link as the secret.

@@ -13,6 +13,10 @@ async function toTrack(bytes: ArrayBuffer, name: string): Promise<SubtitleTrack>
   return { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, name, data, offset: 0 };
 }
 
+export function subtitleFromBytes(bytes: ArrayBuffer, name: string): Promise<SubtitleTrack> {
+  return toTrack(bytes, name);
+}
+
 export async function subtitleFromFile(file: File): Promise<SubtitleTrack> {
   return toTrack(await file.arrayBuffer(), file.name);
 }

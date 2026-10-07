@@ -80,6 +80,8 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         {media && (isHost || room.subtitles) && (
           <div className="mt-3 border-t border-zinc-800 pt-3">
             <SubtitleControls
+              key={media.url}
+              media={media}
               isHost={isHost}
               track={room.subtitles}
               onChange={room.setSubtitles}

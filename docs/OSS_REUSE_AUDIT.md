@@ -32,3 +32,27 @@ Licenses checked from npm metadata and each repo's LICENSE file on 2026-10-07.
 - `lib/media/source.ts`, `lib/media/probe.ts`: detection and the header-only
   probe for links with no extension.
 - Sync engine, rooms, presence and Supabase transport (unchanged).
+
+## Auto Arabic subtitles (2026-10-07)
+
+| Feature | Source | License | Reuse method | Decision |
+| --- | --- | --- | --- | --- |
+| Match weights, id-implies-title/year equivalences, equivalent release groups | Diaoul/subliminal `src/subliminal/score.py`, `src/subliminal/matches.py` | MIT | Adapted (ported to TypeScript in `lib/subtitles/search/score.ts`, copyright notice kept in the file header) | USE. Same weights (movie: title 162, year 54, release group 18, streaming service 18, fps 9, source 4, audio 2, resolution 1, video codec 1, exact release 323; episode: series 486, year 162, season 54, episode 54, …). "Country" dropped: release names don't carry it. |
+| Release-name parsing (title, year, season/episode, group, source, resolution, codecs, service) | guessit-io/guessit | LGPL-3.0 | Reference only | NOT USED AS CODE. Python, LGPL. Field names and source grouping (WEB-DL / WEBRip / BluRay / HDTV / DVD) follow guessit. |
+| Release-name parsing | parse-torrent-title 3.0.1 (npm) | MIT | npm dependency | USE. JS port of the guessit-style PTN parser; zero runtime deps. Spiked against @ctrl/video-filename-parser 5.12.0 (MIT): that one labelled unknown sources as WEB-DL and missed years in series names, so rejected. |
+| Provider abstraction, matched/not-matched signals, HI and forced handling, minimum score before auto-download, upgrade to a better subtitle, provider failure isolation | morpheus65535/bazarr | GPL-3.0 | Ideas only | NO CODE COPIED. Taken as ideas: one small provider interface (search + download), each provider fails independently and the error is shown, hearing-impaired penalised unless asked for, nothing auto-applied below a confidence bar, reasons shown per result. Upgrade-later and forced-only postponed. |
+| OpenSubtitles | OpenSubtitles REST API v1 | API terms | Direct `fetch` (≈150 lines) | USE. `opensubtitles-api` (MIT) on npm wraps the retired XML-RPC API, so not used. |
+| SubDL | SubDL API v1 | API terms | Direct `fetch` | USE. Strong Arabic coverage; same interface as OpenSubtitles. |
+| Zip extraction for SubDL downloads | fflate 0.8.3 (npm) | MIT | npm dependency | USE |
+| Automatic subtitle timing (audio alignment) | smacke/ffsubsync | MIT | Future | POSTPONE. Preferred future source for auto-sync; needs ffmpeg/audio access we don't have in the browser-only MVP. Manual delay stays. |
+| Automatic subtitle timing | kaegi/alass | GPL-3.0 | Ideas only | NO CODE COPIED. Noted only. |
+
+Licenses checked from each repository's LICENSE file and npm metadata on 2026-10-07.
+
+### Ranking we added on top of subliminal
+
+- Wrong year (movie): minus twice the year weight, never auto-selected.
+- Different season or episode: dropped.
+- Not Arabic: minus half the maximum score. Hearing impaired when not asked for: minus 9. Machine translated: minus 18.
+- Downloads, rating and trusted uploader only break ties (always worth under 1 point).
+- **Confidence:** a result is applied automatically only when it matches the exact release name, the IMDb id, title + year (movie), or series + season + episode, in Arabic, without a year mismatch. Otherwise the host sees the top five with their reasons and picks.

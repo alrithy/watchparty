@@ -572,3 +572,92 @@ test("subtitles: upload, link, RTL, delay and hide are shared with guests", asyn
   await host.getByTestId("subtitle-file").setInputFiles({ name: "notes.srt", mimeType: "text/plain", buffer: Buffer.from("hello") });
   await expect(host.getByTestId("subtitle-error")).toContainText("No subtitles found");
 });
+
+function choice(id: string, release: string, percent: number, confidence: "high" | "low") {
+  return {
+    provider: "opensubtitles",
+    id,
+    release,
+    language: "ar",
+    hearingImpaired: false,
+    machineTranslated: false,
+    downloads: 10,
+    rating: null,
+    trusted: false,
+    fps: null,
+    feature: { imdbId: null, title: "Big Buck Bunny", year: 2008, season: null, episode: null },
+    score: percent,
+    percent,
+    confidence,
+    reasons: confidence === "high" ? ["Title", "Year 2008", "Arabic"] : ["Title", "Arabic"],
+  };
+}
+
+test("subtitles: Find Arabic subtitles asks when unsure, applies a confident match, and guests get it", async ({ browser, context }) => {
+  const host = await context.newPage();
+  const roomUrl = await hostRoom(host);
+  const guest = await guestPage(browser, context);
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+
+  // The providers are behind our server; stand in for its two routes.
+  const searches: { title?: string }[] = [];
+  await host.route("**/api/subtitles/search", async (route) => {
+    const body = route.request().postDataJSON() as { title?: string };
+    searches.push(body);
+    if (!body.title) {
+      await route.fulfill({
+        json: {
+          needTitle: false,
+          wanted: { title: "bbb", year: null, season: null, episode: null },
+          results: [choice("1", "Big.Buck.Bunny.2008.720p", 22, "low"), choice("2", "Big.Buck.Bunny.Remake", 20, "low")],
+          autoSelect: false,
+          errors: [{ provider: "subdl", message: "SubDL didn't respond." }],
+        },
+      });
+    } else {
+      await route.fulfill({
+        json: {
+          needTitle: false,
+          wanted: { title: "Big Buck Bunny", year: 2008, season: null, episode: null },
+          results: [choice("3", "Big.Buck.Bunny.2008.1080p", 67, "high"), choice("1", "Big.Buck.Bunny.2008.720p", 22, "low")],
+          autoSelect: true,
+          errors: [],
+        },
+      });
+    }
+  });
+  const downloads: string[] = [];
+  await host.route("**/api/subtitles/download", async (route) => {
+    const { id } = route.request().postDataJSON() as { id: string };
+    downloads.push(id);
+    const text = id === "3" ? "1\n00:00:00,000 --> 00:00:30,000\nترجمة تلقائية\n" : "1\n00:00:00,000 --> 00:00:30,000\nاختيار يدوي\n";
+    await route.fulfill({ body: text, headers: { "Content-Type": "application/octet-stream" } });
+  });
+  await act(host, { seek: 5 });
+
+  // Low confidence: nothing is applied; the host sees the top matches and why.
+  await host.getByTestId("subtitle-find").click();
+  await expect(host.getByTestId("subtitle-pick")).toBeVisible();
+  await expect(host.getByTestId("subtitle-choice")).toHaveCount(2);
+  await expect(host.getByTestId("subtitle-provider-error")).toHaveText("SubDL didn't respond.");
+  expect(downloads).toEqual([]);
+  await expect(host.getByTestId("subtitle-name")).toHaveText("None");
+
+  // Picking one shares it with the guest.
+  await host.getByTestId("subtitle-choice").first().getByRole("button", { name: "Use" }).click();
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("اختيار يدوي", { timeout: 10_000 });
+  await expect(guest.getByTestId("subtitle-name")).toHaveText("Big.Buck.Bunny.2008.720p");
+
+  // Searching a typed title finds a confident match, which is applied without asking.
+  await host.getByTestId("subtitle-title").fill("Big Buck Bunny 2008");
+  await host.getByTestId("subtitle-title").press("Enter");
+  await expect(host.getByTestId("subtitle-match")).toContainText("67%");
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("ترجمة تلقائية", { timeout: 10_000 });
+  expect(searches.at(-1)?.title).toBe("Big Buck Bunny 2008");
+  expect(downloads).toEqual(["1", "3"]);
+
+  // Manual subtitles and the shared delay still work alongside it.
+  await host.getByTestId("subtitle-later").click();
+  await expect(guest.getByTestId("subtitle-offset")).toHaveText("+0.5s");
+});
