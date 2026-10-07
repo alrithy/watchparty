@@ -7,7 +7,7 @@ export default defineConfig({
   timeout: 90_000,
   workers: 1,
   use: {
-    baseURL: `http://localhost:${PORT}`,
+    baseURL: process.env.E2E_BASE_URL || `http://localhost:${PORT}`,
     launchOptions: {
       executablePath: process.env.CHROMIUM_PATH || undefined,
       // Lets the guest tab play without a click; the gesture overlay is covered separately.
@@ -19,7 +19,10 @@ export default defineConfig({
     url: `http://localhost:${PORT}/api/time`,
     reuseExistingServer: true,
     timeout: 180_000,
-    // Force local (BroadcastChannel) mode so tests don't depend on a Supabase project.
-    env: { NEXT_PUBLIC_SUPABASE_URL: "", NEXT_PUBLIC_SUPABASE_ANON_KEY: "" },
+    // Local (BroadcastChannel) mode by default so tests don't depend on a Supabase project.
+    // E2E_SUPABASE=1 keeps the Supabase env vars and runs the same suite over Realtime.
+    env: process.env.E2E_SUPABASE
+      ? {}
+      : { NEXT_PUBLIC_SUPABASE_URL: "", NEXT_PUBLIC_SUPABASE_ANON_KEY: "" },
   },
 });

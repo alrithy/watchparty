@@ -13,7 +13,12 @@ export function getSupabase(): SupabaseClient | null {
     url && anonKey
       ? createClient(url, anonKey, {
           auth: { persistSession: false, autoRefreshToken: false },
-          realtime: { params: { eventsPerSecond: 20 } },
+          realtime: {
+            params: { eventsPerSecond: 20 },
+            // Default is 25s; a dead socket is only noticed after a missed beat,
+            // so a shorter interval lets a dropped guest reconnect within seconds.
+            heartbeatIntervalMs: 5000,
+          },
         })
       : null;
   return client;

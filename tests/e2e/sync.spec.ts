@@ -18,6 +18,14 @@ async function gap(host: Page, guest: Page) {
   return h.t - g.t;
 }
 
+/** Connected over the transport this run expects (Supabase Realtime when E2E_SUPABASE is set). */
+async function expectTransport(page: Page) {
+  const badge = page.getByTestId("connection");
+  await expect(badge).toHaveAttribute("data-status", "connected", { timeout: 15_000 });
+  if (process.env.E2E_SUPABASE) await expect(badge).not.toContainText("local");
+  else await expect(badge).toContainText("local");
+}
+
 const video = (page: Page) => page.locator('[data-testid="video"]');
 
 test("host and guest stay in sync across play, pause, seek, drift and reloads", async ({ context }) => {
@@ -26,6 +34,7 @@ test("host and guest stay in sync across play, pause, seek, drift and reloads", 
   await host.getByTestId("create-room").click();
   await host.waitForURL(/\/room\/[A-Z0-9]{6}$/);
   const roomUrl = new URL(host.url()).pathname;
+  await expectTransport(host);
 
   await host.getByTestId("source-url").fill(new URL(CLIP, host.url()).toString());
   await host.getByTestId("load-source").click();
@@ -34,6 +43,7 @@ test("host and guest stay in sync across play, pause, seek, drift and reloads", 
   // Guest joins through the invite link in a separate tab.
   const guest = await context.newPage();
   await guest.goto(roomUrl);
+  await expectTransport(guest);
   await expect(guest.getByTestId("media-label")).toContainText("clip.webm");
   await expect(host.getByTestId("participant-guest")).toContainText("Ready");
   await expect(guest.getByTestId("participant-host")).toBeVisible();
@@ -140,4 +150,82 @@ test("guest blocked by autoplay policy gets a join button", async ({ context }) 
   await expect.poll(async () => (await info(guest)).paused).toBe(false);
   await guest.waitForTimeout(2500);
   expect(Math.abs(await gap(host, guest))).toBeLessThan(0.5);
+});
+
+/** Host creates a room with the test clip loaded; returns the room path. */
+async function hostRoom(host: Page) {
+  await host.goto("/");
+  await host.getByTestId("create-room").click();
+  await host.waitForURL(/\/room\//);
+  await expectTransport(host);
+  await host.getByTestId("source-url").fill(new URL(CLIP, host.url()).toString());
+  await host.getByTestId("load-source").click();
+  await expect.poll(async () => (await info(host)).ready).toBeGreaterThanOrEqual(3);
+  return new URL(host.url()).pathname;
+}
+
+test("presence shows joins and leaves", async ({ browser, context }) => {
+  const host = await context.newPage();
+  const roomUrl = await hostRoom(host);
+  // Over Supabase the guest gets its own browser context, like a second device.
+  // The local fallback only reaches tabs in the same context.
+  const guest = await (process.env.E2E_SUPABASE ? await browser.newContext() : context).newPage();
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready");
+  await expect(guest.getByTestId("participant-host")).toBeVisible();
+  await guest.close();
+  await expect(host.getByTestId("participant-guest")).toHaveCount(0, { timeout: 15_000 });
+});
+
+test("guest recovers after a network drop", async ({ browser }) => {
+  test.skip(!process.env.E2E_SUPABASE, "the local fallback has no network to drop");
+  const host = await (await browser.newContext()).newPage();
+  const roomUrl = await hostRoom(host);
+  const guestCtx = await browser.newContext();
+  const guest = await guestCtx.newPage();
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready");
+  await video(host).evaluate((v: HTMLVideoElement) => v.play());
+  await expect.poll(async () => (await info(guest)).paused).toBe(false);
+
+  await guestCtx.setOffline(true);
+  await expect(guest.getByTestId("connection")).not.toHaveAttribute("data-status", "connected", { timeout: 15_000 });
+  // While the guest is offline the host pauses and seeks; the guest must catch up afterwards.
+  await video(host).evaluate((v: HTMLVideoElement) => {
+    v.pause();
+    v.currentTime = 50;
+  });
+  await host.waitForTimeout(4000);
+  await guestCtx.setOffline(false);
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 20_000 }).toBe(true);
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 5000 }).toBeLessThan(0.25);
+  await expect(guest.getByTestId("connection")).toHaveAttribute("data-status", "connected");
+});
+
+test("pause for everyone while a guest buffers", async ({ context }) => {
+  const host = await context.newPage();
+  const roomUrl = await hostRoom(host);
+  await host.getByLabel("Pause when a participant buffers").check();
+  const guest = await context.newPage();
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready");
+  await video(host).evaluate((v: HTMLVideoElement) => v.play());
+  await expect.poll(async () => (await info(guest)).paused).toBe(false);
+
+  // Simulate the guest running out of data.
+  await video(guest).evaluate((v: HTMLVideoElement) => {
+    Object.defineProperty(v, "readyState", { configurable: true, get: () => 2 });
+    v.dispatchEvent(new Event("waiting"));
+  });
+  await expect(host.getByTestId("participant-guest")).toContainText("Buffering");
+  await expect.poll(async () => (await info(host)).paused, { timeout: 5000 }).toBe(true);
+  await expect(guest.getByTestId("sync-state")).toHaveText("Paused");
+
+  // Guest recovers: host resumes on its own.
+  await video(guest).evaluate((v: HTMLVideoElement) => {
+    delete (v as unknown as { readyState?: number }).readyState;
+    v.dispatchEvent(new Event("canplay"));
+  });
+  await expect.poll(async () => (await info(host)).paused, { timeout: 5000 }).toBe(false);
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 5000 }).toBe(false);
 });
