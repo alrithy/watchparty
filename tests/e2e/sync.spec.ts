@@ -351,7 +351,7 @@ const LIVE_SOURCES = [
   {
     name: "generic CDN URL without extension",
     // Extensionless path that redirects to the media file, like a CDN download link.
-    url: "https://commons.wikimedia.org/w/index.php?title=Special:Redirect/file/Big_Buck_Bunny_4K.webm",
+    url: "https://commons.wikimedia.org/w/index.php?title=Special:Redirect/file/Blender_Crowd_Simulation.webm",
     kind: "file",
   },
   { name: "YouTube", url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", kind: "youtube" },

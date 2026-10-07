@@ -26,6 +26,8 @@ declare global {
 }
 
 const POLL_MS = 250;
+/** A provider that blocks the viewer (bot checks, network blocks) never reports ready. */
+const READY_TIMEOUT_MS = 20_000;
 
 /** Vimeo through the official Player SDK (player.vimeo.com/api/player.js). */
 export class VimeoPlayerAdapter implements PlayerAdapter {
@@ -46,6 +48,7 @@ export class VimeoPlayerAdapter implements PlayerAdapter {
   private failure: string | null = null;
   private clock = new PositionClock();
   private poll: ReturnType<typeof setInterval> | null = null;
+  private readyTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
 
   constructor(container: HTMLElement, private readonly opts: PlayerOptions) {
@@ -76,6 +79,7 @@ export class VimeoPlayerAdapter implements PlayerAdapter {
         });
         this.player = p;
         p.on("loaded", () => {
+          if (this.readyTimer) clearTimeout(this.readyTimer);
           this.isReady = true;
           void p.getDuration().then((d) => (this.dur = d > 0 ? d : NaN));
           this.events.emit("ready");
@@ -128,6 +132,9 @@ export class VimeoPlayerAdapter implements PlayerAdapter {
         // Private, password-protected, deleted or embed-restricted videos.
         p.on("error", () => this.fail(NOT_DIRECT_MESSAGE));
         p.ready().catch(() => this.fail(NOT_DIRECT_MESSAGE));
+        this.readyTimer = setTimeout(() => {
+          if (!this.isReady) this.fail(NOT_DIRECT_MESSAGE);
+        }, READY_TIMEOUT_MS);
         this.poll = setInterval(() => {
           if (this.isReady) void p.getCurrentTime().then((t) => this.clock.set(t, this.advancing())).catch(() => {});
         }, POLL_MS);
@@ -219,6 +226,7 @@ export class VimeoPlayerAdapter implements PlayerAdapter {
   destroy() {
     this.destroyed = true;
     if (this.poll) clearInterval(this.poll);
+    if (this.readyTimer) clearTimeout(this.readyTimer);
     this.events.clear();
     void this.player?.destroy().catch(() => {});
     this.player = null;

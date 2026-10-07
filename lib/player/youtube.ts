@@ -45,6 +45,8 @@ declare global {
 const STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 } as const;
 const PLAY_TIMEOUT_MS = 3000;
 const POLL_MS = 250;
+/** A provider that blocks the viewer (bot checks, network blocks) never reports ready. */
+const READY_TIMEOUT_MS = 20_000;
 
 function loadYouTubeApi(): Promise<void> {
   return loadScript(
@@ -76,6 +78,7 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
   private seekingUntil = 0;
   private failure: string | null = null;
   private poll: ReturnType<typeof setInterval> | null = null;
+  private readyTimer: ReturnType<typeof setTimeout> | null = null;
   private clock = new PositionClock();
   private lastSample: { t: number; at: number } | null = null;
   private playWaiters: { resolve: () => void; reject: (e: unknown) => void; timer: ReturnType<typeof setTimeout> }[] = [];
@@ -116,6 +119,7 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
             onReady: () => {
               if (this.destroyed) return;
               this.player = created;
+              if (this.readyTimer) clearTimeout(this.readyTimer);
               this.isReady = true;
               this.events.emit("ready");
               this.events.emit("canplay");
@@ -128,6 +132,9 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
         this.pending = created;
         const iframe = this.wrapper.querySelector("iframe");
         if (iframe) iframe.className = "absolute inset-0 h-full w-full";
+        this.readyTimer = setTimeout(() => {
+          if (!this.isReady) this.fail(NOT_DIRECT_MESSAGE);
+        }, READY_TIMEOUT_MS);
         this.poll = setInterval(() => this.sample(), POLL_MS);
       },
       () => this.fail("Couldn't load the YouTube player."),
@@ -281,6 +288,7 @@ export class YouTubePlayerAdapter implements PlayerAdapter {
   destroy() {
     this.destroyed = true;
     if (this.poll) clearInterval(this.poll);
+    if (this.readyTimer) clearTimeout(this.readyTimer);
     this.settlePlay(false);
     this.events.clear();
     const p = this.player ?? this.pending;
