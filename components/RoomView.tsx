@@ -72,6 +72,24 @@ export default function RoomView({ roomId, clientId, role }: Props) {
 
       <PlayerBar isHost={isHost} playerRef={room.playerRef} screenRef={screenRef} />
 
+      <Panel title="Watch">
+        {isHost && <SourceForm onLoad={room.loadMedia} />}
+        <p className="mt-2 truncate text-sm text-zinc-400" data-testid="media-label">
+          {media ? `Now: ${media.label}` : "Nothing loaded."}
+        </p>
+        {media && (isHost || room.subtitles) && (
+          <div className="mt-3 border-t border-zinc-800 pt-3">
+            <SubtitleControls
+              isHost={isHost}
+              track={room.subtitles}
+              onChange={room.setSubtitles}
+              visible={showSubtitles}
+              onToggle={() => setShowSubtitles((v) => !v)}
+            />
+          </div>
+        )}
+      </Panel>
+
       <section className="grid gap-4 md:grid-cols-3">
         <Panel title="Participants">
           <ul className="space-y-1 text-sm" data-testid="participants">
@@ -112,23 +130,6 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         </Panel>
       </section>
 
-      <Panel title="Watch">
-        {isHost && <SourceForm onLoad={room.loadMedia} />}
-        <p className="mt-2 truncate text-sm text-zinc-400" data-testid="media-label">
-          {media ? `Now: ${media.label}` : "Nothing loaded."}
-        </p>
-        {media && (isHost || room.subtitles) && (
-          <div className="mt-3 border-t border-zinc-800 pt-3">
-            <SubtitleControls
-              isHost={isHost}
-              track={room.subtitles}
-              onChange={room.setSubtitles}
-              visible={showSubtitles}
-              onToggle={() => setShowSubtitles((v) => !v)}
-            />
-          </div>
-        )}
-      </Panel>
     </main>
   );
 }
@@ -246,6 +247,11 @@ function InviteLink({ roomId }: { roomId: string }) {
       <button
         className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:border-zinc-400"
         onClick={() => {
+          // Phones get the share sheet (Messages, WhatsApp...); desktops copy the link.
+          if (navigator.share && window.matchMedia("(pointer: coarse)").matches) {
+            void navigator.share({ title: "Watch Party", url: link }).catch(() => {});
+            return;
+          }
           void navigator.clipboard?.writeText(link).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
