@@ -1,6 +1,49 @@
-import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { expect, test as base, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 const CLIP = "/__test__/clip.webm";
+
+/**
+ * The test clip isn't deployed, so remote runs serve it from disk (with Range
+ * support, which seeking needs). Every context also reports browser console
+ * errors so live runs surface them.
+ */
+async function prepareContext(ctx: BrowserContext) {
+  ctx.on("weberror", (e) => console.log(`[browser error] ${e.error().message}`));
+  ctx.on("console", (m) => {
+    if (m.type() === "error") console.log(`[console.error] ${m.text()}`);
+  });
+  if (!process.env.E2E_BASE_URL) return;
+  const clip = readFileSync("public/__test__/clip.webm");
+  await ctx.route(`**${CLIP}`, (route) => {
+    const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers()["range"] ?? "");
+    const start = range ? Number(range[1]) : 0;
+    const end = range?.[2] ? Number(range[2]) : clip.length - 1;
+    return route.fulfill({
+      status: range ? 206 : 200,
+      body: clip.subarray(start, end + 1),
+      headers: {
+        "Content-Type": "video/webm",
+        "Accept-Ranges": "bytes",
+        ...(range ? { "Content-Range": `bytes ${start}-${end}/${clip.length}` } : {}),
+      },
+    });
+  });
+}
+
+const test = base.extend({
+  context: async ({ context }, provide) => {
+    await prepareContext(context);
+    await provide(context);
+  },
+});
+
+/** A second, independent browser context (another "device"), prepared like the default one. */
+async function newContext(browser: Browser) {
+  const ctx = await browser.newContext({ storageState: test.info().project.use.storageState });
+  await prepareContext(ctx);
+  return ctx;
+}
 
 type VideoInfo = { t: number; paused: boolean; rate: number; ready: number };
 
@@ -169,7 +212,7 @@ test("presence shows joins and leaves", async ({ browser, context }) => {
   const roomUrl = await hostRoom(host);
   // Over Supabase the guest gets its own browser context, like a second device.
   // The local fallback only reaches tabs in the same context.
-  const guest = await (process.env.E2E_SUPABASE ? await browser.newContext() : context).newPage();
+  const guest = await (process.env.E2E_SUPABASE ? await newContext(browser) : context).newPage();
   await guest.goto(roomUrl);
   await expect(host.getByTestId("participant-guest")).toContainText("Ready");
   await expect(guest.getByTestId("participant-host")).toBeVisible();
@@ -179,9 +222,9 @@ test("presence shows joins and leaves", async ({ browser, context }) => {
 
 test("guest recovers after a network drop", async ({ browser }) => {
   test.skip(!process.env.E2E_SUPABASE, "the local fallback has no network to drop");
-  const host = await (await browser.newContext()).newPage();
+  const host = await (await newContext(browser)).newPage();
   const roomUrl = await hostRoom(host);
-  const guestCtx = await browser.newContext();
+  const guestCtx = await newContext(browser);
   const guest = await guestCtx.newPage();
   await guest.goto(roomUrl);
   await expect(host.getByTestId("participant-guest")).toContainText("Ready");
