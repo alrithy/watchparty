@@ -345,17 +345,18 @@ test("pause for everyone while a guest buffers", async ({ context }) => {
 
 /** E2E_LIVE_SOURCES=1 swaps the local fixtures for public media (needs open internet). */
 const LIVE_SOURCES = [
-  { name: "MP4", url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", kind: "file" },
+  { name: "MP4", url: "https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4", kind: "file" },
   { name: "HLS", url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8", kind: "hls" },
   { name: "DASH", url: "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd", kind: "dash" },
   {
     name: "generic CDN URL without extension",
-    url: "https://httpbin.org/redirect-to?url=https%3A%2F%2Fcommondatastorage.googleapis.com%2Fgtv-videos-bucket%2Fsample%2FElephantsDream.mp4",
+    // Extensionless path that redirects to the media file, like a CDN download link.
+    url: "https://commons.wikimedia.org/w/index.php?title=Special:Redirect/file/Big_Buck_Bunny_4K.webm",
     kind: "file",
   },
   { name: "YouTube", url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", kind: "youtube" },
   { name: "Vimeo", url: "https://vimeo.com/76979871", kind: "vimeo" },
-  { name: "WebM", url: "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.360p.webm", kind: "file" },
+  { name: "WebM", url: "https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.360p.vp9.webm", kind: "file" },
 ] as const;
 
 const FIXTURE_SOURCES = [
