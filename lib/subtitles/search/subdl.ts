@@ -218,6 +218,12 @@ function errorCode(data: SubdlReply, status: number): string {
 }
 
 /** `strict`: keep only subtitles that name the wanted episode themselves (fallback queries). */
+/** A download link's form with digits and letters masked ("/aaaaaaaa/9999-9999.aaa"), for diagnostics. */
+function shape(url: unknown): string {
+  if (typeof url !== "string") return typeof url;
+  return url.slice(0, 120).replace(/[0-9]/g, "9").replace(/[a-z]/gi, "a");
+}
+
 type Query = { label: string; params: Record<string, string>; strict?: boolean };
 
 async function run(q: Query, wanted: Wanted, diag: QueryDiagnostics[], sample = false): Promise<Candidate[]> {
@@ -269,9 +275,9 @@ async function run(q: Query, wanted: Wanted, diag: QueryDiagnostics[], sample = 
       episode_from: s.episode_from ?? null,
       episode_end: s.episode_end ?? null,
       full_season: s.full_season ?? null,
-      url: subdlPath(s.url) ? "ok" : typeof s.url,
+      url: shape(s.url),
       unpack: Array.isArray(s.unpack_files)
-        ? s.unpack_files.slice(0, 3).map((f) => ({ keys: Object.keys(f), name: f.name ?? null, season: f.season ?? null, episode: f.episode ?? null, url: subdlPath(f.url) ? "ok" : typeof f.url }))
+        ? s.unpack_files.slice(0, 3).map((f) => ({ keys: Object.keys(f), name: f.name ?? null, season: f.season ?? null, episode: f.episode ?? null, url: shape(f.url) }))
         : null,
     }));
   }
