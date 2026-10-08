@@ -290,7 +290,7 @@ DRM_AUTH_REQUIRED.
 | 30-min seek / pause / reconnect | – | – | not yet run |
 | Home Screen Web App | – | – | not yet run |
 | No-CORS HLS (public test host, playlist sent without `Access-Control-Allow-Origin`, checked with `curl`) | legacy | hls.js | FAILED as expected (`NETWORK_ERROR`, single attempt) |
-| Same | smart | Browser player (Safari HLS) | PLAYING (416×234, 1 audio, ready 1906 ms); picture + sound not yet confirmed by the user for this run |
+| Same | smart | Browser player (Safari HLS) | PASSED (picture + sound confirmed by the user; 416×234, 1 audio, ready 1906 ms) |
 | AirPlay | – | – | not yet run |
 
 Diagnostics showed `0×0` / `0 audio` during these runs because Safari and
