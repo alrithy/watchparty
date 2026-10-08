@@ -90,20 +90,23 @@ function num(v: unknown): number | null {
   return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
-/** "/subtitle/123-456.zip", or the same on dl.subdl.com; anything else is refused. */
+/**
+ * The download path of a SubDL link: "/subtitle/123-456.zip" or, for a file
+ * unpacked from a season pack, "/subtitle/<pack>/<file>". SubDL appends our API
+ * key as a query string, so the query is always dropped here and the key is
+ * added back only on the server when downloading. Anything else is refused.
+ */
 export function subdlPath(url: string | null | undefined): string | null {
   if (!url) return null;
-  let path = url;
-  if (/^https?:\/\//i.test(url)) {
-    try {
-      const u = new URL(url);
-      if (u.hostname !== "dl.subdl.com" || u.search) return null;
-      path = u.pathname;
-    } catch {
-      return null;
-    }
+  let path: string;
+  try {
+    const u = new URL(url, DL);
+    if (u.origin !== DL) return null;
+    path = u.pathname;
+  } catch {
+    return null;
   }
-  return /^\/subtitle\/[\w.-]+\.(zip|srt|vtt)$/i.test(path) ? path : null;
+  return /^\/subtitle\/[\w.-]{1,80}(\/[\w.-]{1,120})?$/.test(path) && !path.includes("..") ? path : null;
 }
 
 /** A season pack's id names the episode to take out of the zip: "/subtitle/1-2.zip#S03E01". */
@@ -218,10 +221,10 @@ function errorCode(data: SubdlReply, status: number): string {
 }
 
 /** `strict`: keep only subtitles that name the wanted episode themselves (fallback queries). */
-/** A download link's form with digits and letters masked ("/aaaaaaaa/9999-9999.aaa"), for diagnostics. */
+/** A download link's form with the query dropped and digits and letters masked ("/aaaaaaaa/9999-9999.aaa"), for diagnostics. */
 function shape(url: unknown): string {
   if (typeof url !== "string") return typeof url;
-  return url.slice(0, 120).replace(/[0-9]/g, "9").replace(/[a-z]/gi, "a");
+  return url.split(/[?#]/)[0].slice(0, 120).replace(/[0-9]/g, "9").replace(/[a-z]/gi, "a");
 }
 
 type Query = { label: string; params: Record<string, string>; strict?: boolean };
@@ -370,8 +373,9 @@ export function pickFromZip(files: Record<string, Uint8Array>, episode: { season
 export async function downloadSubdl(id: string, maxBytes: number): Promise<ArrayBuffer> {
   const m = EPISODE_TAG.exec(id);
   const path = m ? id.slice(0, m.index) : id;
-  if (subdlPath(path) !== path || path.startsWith("http")) throw new ProviderError("subdl", "Unknown subtitle.");
-  const res = await get(`${DL}${path}`);
+  if (subdlPath(path) !== path || !path.startsWith("/")) throw new ProviderError("subdl", "Unknown subtitle.");
+  // SubDL's links carry the API key; it is added here, on the server, and never leaves it.
+  const res = await get(`${DL}${path}?${new URLSearchParams({ api_key: process.env.SUBDL_API_KEY ?? "" })}`);
   if (!res.ok) throw new ProviderError("subdl", "Couldn't download that subtitle.");
   const bytes = new Uint8Array(await res.arrayBuffer());
   if (bytes.byteLength > maxBytes * 10) throw new ProviderError("subdl", "That subtitle file is too large.");
