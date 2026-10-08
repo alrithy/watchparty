@@ -1,90 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
 import type { PresenceInfo, Role } from "@/lib/room/types";
+import type { PlayerAdapter } from "@/lib/player/types";
 import { useWatchParty } from "@/components/useWatchParty";
-import {
-  INCOMPATIBLE_MESSAGE,
-  describeMediaError,
-  isHls,
-  makeSource,
-  validateMediaUrl,
-} from "@/lib/media/source";
+import { prepareSource } from "@/lib/media/prepare";
+import { SubtitleControls, SubtitleOverlay } from "@/components/Subtitles";
 
 type Props = { roomId: string; clientId: string; role: Role };
 
 export default function RoomView({ roomId, clientId, role }: Props) {
-  const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  // Fullscreen takes the player and the subtitle layer together.
+  const screenRef = useRef<HTMLDivElement>(null);
   const isHost = role === "host";
-  const room = useWatchParty({ roomId, clientId, role, videoRef });
-  const [mediaError, setMediaError] = useState<string | null>(null);
-  const { media, updateStatus } = room;
-
-  // Attach the source: native playback first, hls.js only where HLS isn't native.
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    setMediaError(null);
-    if (!media) {
-      v.removeAttribute("src");
-      v.load();
-      return;
-    }
-    let cancelled = false;
-    let destroy: (() => void) | undefined;
-    if (isHls(media.url) && !v.canPlayType("application/vnd.apple.mpegurl")) {
-      void import("hls.js").then(({ default: Hls }) => {
-        if (cancelled) return;
-        if (!Hls.isSupported()) {
-          setMediaError(INCOMPATIBLE_MESSAGE);
-          return;
-        }
-        const hls = new Hls();
-        hls.on(Hls.Events.ERROR, (_e, data) => {
-          if (!data.fatal) return;
-          setMediaError(
-            data.type === Hls.ErrorTypes.NETWORK_ERROR
-              ? "Network error while loading the stream."
-              : INCOMPATIBLE_MESSAGE,
-          );
-          updateStatus("error");
-        });
-        hls.loadSource(media.url);
-        hls.attachMedia(v);
-        destroy = () => hls.destroy();
-      });
-    } else {
-      v.src = media.url;
-      v.load();
-    }
-    return () => {
-      cancelled = true;
-      destroy?.();
-    };
-  }, [media, updateStatus]);
-
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    const onError = () => {
-      setMediaError(describeMediaError(v.error));
-      updateStatus("error");
-    };
-    // Some codecs (e.g. HEVC in Chrome) load audio but no picture.
-    const onMeta = () => {
-      if (v.videoWidth === 0 && v.videoHeight === 0) {
-        setMediaError(`${INCOMPATIBLE_MESSAGE} No playable video track was found.`);
-      }
-    };
-    v.addEventListener("error", onError);
-    v.addEventListener("loadedmetadata", onMeta);
-    return () => {
-      v.removeEventListener("error", onError);
-      v.removeEventListener("loadedmetadata", onMeta);
-    };
-  }, [updateStatus]);
+  const room = useWatchParty({ roomId, clientId, role, stageRef });
+  const { media, mediaError } = room;
+  const [showSubtitles, setShowSubtitles] = useState(true);
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-6">
@@ -107,17 +40,17 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         </p>
       )}
 
-      <div ref={stageRef} className="relative overflow-hidden rounded-lg bg-black">
-        <video
-          ref={videoRef}
-          data-testid="video"
-          className="aspect-video w-full bg-black"
-          controls={isHost}
-          playsInline
-          preload="auto"
-        />
+      <div
+        ref={screenRef}
+        data-testid="screen"
+        className="relative overflow-hidden rounded-lg bg-black [&:fullscreen]:flex [&:fullscreen]:items-center [&:fullscreen]:rounded-none"
+      >
+        {/* The player adapter renders its <video> or provider iframe in here. */}
+        <div ref={stageRef} data-testid="stage" data-kind={media?.kind ?? ""} className="w-full" />
+        <SubtitleOverlay track={room.subtitles} playerRef={room.playerRef} visible={showSubtitles} />
+        {!media && <div className="aspect-video w-full" />}
         {!media && (
-          <Overlay>{isHost ? "Choose a source below to start." : "Waiting for the host to pick something to watch…"}</Overlay>
+          <Overlay>{isHost ? "Paste a link below to start." : "Waiting for the host to pick something to watch…"}</Overlay>
         )}
         {mediaError && (
           <Overlay>
@@ -137,7 +70,27 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         )}
       </div>
 
-      {!isHost && <GuestControls videoRef={videoRef} stageRef={stageRef} />}
+      <PlayerBar isHost={isHost} playerRef={room.playerRef} screenRef={screenRef} />
+
+      <Panel title="Watch">
+        {isHost && <SourceForm onLoad={room.loadMedia} />}
+        <p className="mt-2 truncate text-sm text-zinc-400" data-testid="media-label">
+          {media ? `Now: ${media.label}` : "Nothing loaded."}
+        </p>
+        {media && (isHost || room.subtitles) && (
+          <div className="mt-3 border-t border-zinc-800 pt-3">
+            <SubtitleControls
+              key={media.url}
+              media={media}
+              isHost={isHost}
+              track={room.subtitles}
+              onChange={room.setSubtitles}
+              visible={showSubtitles}
+              onToggle={() => setShowSubtitles((v) => !v)}
+            />
+          </div>
+        )}
+      </Panel>
 
       <section className="grid gap-4 md:grid-cols-3">
         <Panel title="Participants">
@@ -179,25 +132,6 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         </Panel>
       </section>
 
-      <Panel title="Playback source">
-        {isHost ? (
-          <SourceForm onLoad={room.loadMedia} />
-        ) : (
-          <div className="space-y-2 text-sm">
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2">
-                <input type="radio" name="guest-source" defaultChecked /> Use host stream
-              </label>
-              <label className="flex items-center gap-2 text-zinc-500" title="Coming in a later milestone">
-                <input type="radio" name="guest-source" disabled /> Use my Real-Debrid (soon)
-              </label>
-            </div>
-          </div>
-        )}
-        <p className="mt-2 truncate text-sm text-zinc-400" data-testid="media-label">
-          {media ? `Now: ${media.label}` : "Nothing loaded."}
-        </p>
-      </Panel>
     </main>
   );
 }
@@ -205,85 +139,98 @@ export default function RoomView({ roomId, clientId, role }: Props) {
 function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["loadMedia"] }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const submit = (e: FormEvent) => {
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const err = validateMediaUrl(url);
-    setError(err);
-    if (!err) onLoad(makeSource("direct", url));
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const result = await prepareSource(url);
+    setBusy(false);
+    if ("error" in result) setError(result.error);
+    else onLoad(result.source);
   };
   return (
-    <form onSubmit={submit} className="space-y-3">
-      <div className="flex gap-4 text-sm">
-        <label className="flex items-center gap-2">
-          <input type="radio" name="mode" defaultChecked /> Direct URL
-        </label>
-        <label className="flex items-center gap-2 text-zinc-500" title="Coming in a later milestone">
-          <input type="radio" name="mode" disabled /> Host Real-Debrid (soon)
-        </label>
-      </div>
+    <form onSubmit={submit} className="space-y-2">
       <div className="flex gap-2">
         <input
           data-testid="source-url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://example.com/movie.mp4 or .m3u8"
+          placeholder="Paste anything to watch"
+          aria-label="Paste anything to watch"
           className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-400"
         />
         <button
           data-testid="load-source"
-          className="rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-white"
+          disabled={busy}
+          className="rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-white disabled:opacity-60"
         >
-          Load
+          {busy ? "Checking…" : "Play"}
         </button>
       </div>
-      {error && <p className="text-sm text-red-300">{error}</p>}
+      {error && <p className="text-sm text-red-300" data-testid="source-error">{error}</p>}
     </form>
   );
 }
 
-function GuestControls({
-  videoRef,
-  stageRef,
+/** Local controls under the player: guests get volume (the host uses the player's own), everyone gets fullscreen. */
+function PlayerBar({
+  isHost,
+  playerRef,
+  screenRef,
 }: {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  stageRef: React.RefObject<HTMLDivElement | null>;
+  isHost: boolean;
+  playerRef: React.RefObject<PlayerAdapter | null>;
+  screenRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
+  const btn = "rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400";
+  const fullscreen = () => {
+    const el = screenRef.current as (HTMLDivElement & { webkitRequestFullscreen?: () => void }) | null;
+    if (!el) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else if (el.requestFullscreen) void el.requestFullscreen().catch(() => {});
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else {
+      // iPhone Safari only lets the <video> itself go fullscreen (our subtitle layer can't follow).
+      const v = el.querySelector("video") as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
+      v?.webkitEnterFullscreen?.();
+    }
+  };
   return (
-    <div className="flex items-center gap-3 text-sm text-zinc-300">
-      <button
-        className="rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400"
-        onClick={() => {
-          const v = videoRef.current;
-          if (!v) return;
-          v.muted = !v.muted;
-          setMuted(v.muted);
-        }}
-      >
-        {muted ? "Unmute" : "Mute"}
-      </button>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.05}
-        value={volume}
-        aria-label="Volume"
-        onChange={(e) => {
-          const v = videoRef.current;
-          const next = Number(e.target.value);
-          if (v) v.volume = next;
-          setVolume(next);
-        }}
-      />
-      <button
-        className="rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400"
-        onClick={() => void stageRef.current?.requestFullscreen?.()}
-      >
+    <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
+      {!isHost && (
+        <>
+          <button
+            className={btn}
+            onClick={() => {
+              playerRef.current?.setMuted(!muted);
+              setMuted(!muted);
+            }}
+          >
+            {muted ? "Unmute" : "Mute"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume}
+            aria-label="Volume"
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              playerRef.current?.setVolume(next);
+              setVolume(next);
+            }}
+          />
+        </>
+      )}
+      <button className={btn} onClick={fullscreen} data-testid="fullscreen">
         Fullscreen
       </button>
-      <span className="text-zinc-500">The host controls playback.</span>
+      {!isHost && <span className="text-zinc-500">The host controls playback.</span>}
     </div>
   );
 }
@@ -302,6 +249,11 @@ function InviteLink({ roomId }: { roomId: string }) {
       <button
         className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:border-zinc-400"
         onClick={() => {
+          // Phones get the share sheet (Messages, WhatsApp...); desktops copy the link.
+          if (navigator.share && window.matchMedia("(pointer: coarse)").matches) {
+            void navigator.share({ title: "Watch Party", url: link }).catch(() => {});
+            return;
+          }
           void navigator.clipboard?.writeText(link).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);

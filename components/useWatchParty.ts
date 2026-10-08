@@ -9,26 +9,35 @@ import type {
   Role,
   RoomSettings,
   RoomSnapshot,
+  SubtitleTrack,
 } from "@/lib/room/types";
 import { createTransport, type ConnectionStatus, type RoomTransport } from "@/lib/realtime/transport";
+import { createPlayer } from "@/lib/player/create";
+import type { PlayerAdapter, PlayerEvent } from "@/lib/player/types";
 import { ServerClock } from "@/lib/sync/clock";
-import { decideCorrection, expectedPosition } from "@/lib/sync/drift";
+import { DRIFT_IGNORE, decideCorrection, expectedPosition } from "@/lib/sync/drift";
 
 const HEARTBEAT_MS = 3000;
 const DRIFT_TICK_MS = 250;
+/** Cap on the learned extra seek lead, so one slow seek can't throw later ones far ahead. */
+const MAX_EXTRA_LEAD = 3;
 const SNAPSHOT_RETRY_MS = 3000;
 const BUFFER_PAUSE_DELAY_MS = 1500;
-/** Seek slightly ahead to absorb the time the seek itself takes. */
-const SEEK_LEAD_S = 0.1;
 
 type Options = {
   roomId: string;
   clientId: string;
   role: Role;
-  videoRef: RefObject<HTMLVideoElement | null>;
+  /** Element the player adapter renders into. */
+  stageRef: RefObject<HTMLDivElement | null>;
 };
 
-type HostSession = { media: MediaSource | null; state: PlaybackState | null; settings: RoomSettings };
+type HostSession = {
+  media: MediaSource | null;
+  state: PlaybackState | null;
+  settings: RoomSettings;
+  subtitles?: SubtitleTrack | null;
+};
 
 const sessionKey = (roomId: string) => `watchparty:session:${roomId}`;
 
@@ -49,30 +58,40 @@ function saveHostSession(roomId: string, s: HostSession) {
   }
 }
 
-export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
+/** Same media in the room means the same player; anything else gets a fresh adapter. */
+const mediaKey = (m: MediaSource | null) => (m ? `${m.kind}|${m.videoId ?? ""}|${m.url}` : "");
+
+export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
   const isHost = role === "host";
   // RoomView only renders in the browser, so reading sessionStorage here is safe.
   const [restored] = useState(() => (isHost ? loadHostSession(roomId) : null));
   const [media, setMedia] = useState<MediaSource | null>(restored?.media ?? null);
   const [playback, setPlayback] = useState<PlaybackState | null>(restored?.state ?? null);
   const [settings, setSettings] = useState<RoomSettings>(restored?.settings ?? { pauseOnBuffer: false });
+  const [subtitles, setSubtitlesState] = useState<SubtitleTrack | null>(restored?.subtitles ?? null);
   const [participants, setParticipants] = useState<PresenceInfo[]>([]);
   const [connection, setConnection] = useState<ConnectionStatus>("connecting");
   const [status, setStatus] = useState<ParticipantStatus>("idle");
   const [drift, setDrift] = useState<number | null>(null);
   const [needsGesture, setNeedsGesture] = useState(false);
   const [transportKind, setTransportKind] = useState<"supabase" | "local" | null>(null);
+  // Keyed by media so a new source starts without the previous source's error.
+  const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
 
   const transportRef = useRef<RoomTransport | null>(null);
+  const playerRef = useRef<PlayerAdapter | null>(null);
   const clockRef = useRef(new ServerClock());
   const stateRef = useRef<PlaybackState | null>(restored?.state ?? null);
   const mediaRef = useRef<MediaSource | null>(restored?.media ?? null);
   const settingsRef = useRef(settings);
+  const subtitlesRef = useRef<SubtitleTrack | null>(restored?.subtitles ?? null);
   const gotSnapshotRef = useRef(false);
   const statusRef = useRef<ParticipantStatus>("idle");
   const driftRef = useRef<number | null>(null);
   // Host reload: seek/resume to the saved state once metadata is available.
   const restorePendingRef = useRef(Boolean(restored?.media && restored?.state));
+  /** The event that ends a host-reload restore ("playing", or "seeked" when paused). */
+  const restoreAwaitRef = useRef<"playing" | "seeked" | null>(null);
 
   const persist = useCallback(() => {
     if (!isHost) return;
@@ -80,6 +99,7 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
       media: mediaRef.current,
       state: stateRef.current,
       settings: settingsRef.current,
+      subtitles: subtitlesRef.current,
     });
   }, [isHost, roomId]);
 
@@ -107,6 +127,7 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
       media: mediaRef.current,
       state: stateRef.current,
       settings: settingsRef.current,
+      subtitles: subtitlesRef.current,
     }),
     [],
   );
@@ -114,10 +135,10 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
   /** Try to play; browsers block unmuted autoplay until the user interacts. */
   const playPendingRef = useRef(false);
   const needsGestureRef = useRef(false);
-  const tryPlay = useCallback((v: HTMLVideoElement, fromGesture = false) => {
+  const tryPlay = useCallback((p: PlayerAdapter, fromGesture = false) => {
     if (playPendingRef.current || (needsGestureRef.current && !fromGesture)) return;
     playPendingRef.current = true;
-    v.play().then(
+    p.play().then(
       () => {
         playPendingRef.current = false;
         needsGestureRef.current = false;
@@ -135,13 +156,13 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
 
   // ---------- Host: publish authoritative state from the local video ----------
   const publishState = useCallback(() => {
-    const v = videoRef.current;
-    if (!isHost || !v || !mediaRef.current) return;
+    const p = playerRef.current;
+    if (!isHost || !p || !mediaRef.current) return;
     const now = clockRef.current.now();
     const prev = stateRef.current?.revision ?? 0;
     const next: PlaybackState = {
-      playing: !v.paused && !v.ended,
-      positionSeconds: v.currentTime,
+      playing: p.playing(),
+      positionSeconds: p.currentTime(),
       refTime: now,
       // Time-based so it keeps increasing across host reloads.
       revision: Math.max(prev + 1, Math.floor(now)),
@@ -151,14 +172,20 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
     setPlayback(next);
     persist();
     transportRef.current?.send("state", next);
-  }, [clientId, isHost, persist, videoRef]);
+  }, [clientId, isHost, persist]);
 
   const loadMedia = useCallback(
     (source: MediaSource) => {
       if (!isHost) return;
       restorePendingRef.current = false;
+      restoreAwaitRef.current = null;
       mediaRef.current = source;
       setMedia(source);
+      // Subtitles belong to the previous video.
+      subtitlesRef.current = null;
+      setSubtitlesState(null);
+      needsGestureRef.current = false;
+      setNeedsGesture(false);
       const now = clockRef.current.now();
       const next: PlaybackState = {
         playing: false,
@@ -187,6 +214,18 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
     [isHost, persist, snapshot],
   );
 
+  /** Host: add, replace, retime or remove the room's subtitles. */
+  const setSubtitles = useCallback(
+    (next: SubtitleTrack | null) => {
+      if (!isHost) return;
+      subtitlesRef.current = next;
+      setSubtitlesState(next);
+      persist();
+      transportRef.current?.send("snapshot", snapshot());
+    },
+    [isHost, persist, snapshot],
+  );
+
   // ---------- Guest: accept authoritative state ----------
   const acceptState = useCallback((next: PlaybackState | null) => {
     if (!next) return;
@@ -199,14 +238,22 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
   const acceptSnapshot = useCallback(
     (snap: RoomSnapshot) => {
       gotSnapshotRef.current = true;
-      if (snap.media?.url !== mediaRef.current?.url) {
+      if (mediaKey(snap.media) !== mediaKey(mediaRef.current)) {
         mediaRef.current = snap.media;
         setMedia(snap.media);
+        needsGestureRef.current = false;
+        setNeedsGesture(false);
         // New media: drop the old state regardless of revision.
         stateRef.current = null;
       }
       settingsRef.current = snap.settings;
       setSettings(snap.settings);
+      const subs = snap.subtitles ?? null;
+      const cur = subtitlesRef.current;
+      if (subs?.id !== cur?.id || subs?.offset !== cur?.offset) {
+        subtitlesRef.current = subs;
+        setSubtitlesState(subs);
+      }
       acceptState(snap.state);
     },
     [acceptState],
@@ -286,122 +333,180 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
     }
   }, [clientId, hostPresent, isHost]);
 
-  // ---------- Video element events: status (everyone) + publishing (host) ----------
+  // ---------- Player lifecycle: one adapter per media; events drive status (everyone) + publishing (host) ----------
+  const key = mediaKey(media);
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    const onLoading = () => updateStatus("loading");
-    const onBuffering = () => {
-      if (v.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) updateStatus("buffering");
-    };
-    const onReady = () => {
-      if (v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) updateStatus("ready");
-    };
-    const onHostChange = () => {
-      if (isHost && !restorePendingRef.current) publishState();
-    };
-    const onLoadedMetadata = () => {
-      // Host reload: resume where the room should be.
-      if (isHost && restorePendingRef.current && stateRef.current) {
-        const s = stateRef.current;
-        v.currentTime = expectedPosition(s, clockRef.current.now(), v.duration);
+    const stage = stageRef.current;
+    const source = mediaRef.current;
+    if (!stage || !source) {
+      updateStatus("idle");
+      return;
+    }
+    const p = createPlayer(source, stage, { controls: isHost });
+    playerRef.current = p;
+    playPendingRef.current = false;
+
+    const onEvent = (e: PlayerEvent, detail?: { message?: string }) => {
+      switch (e) {
+        case "loading":
+          updateStatus("loading");
+          break;
+        case "waiting":
+          if (!p.canContinue()) updateStatus("buffering");
+          break;
+        case "canplay":
+        case "playing":
+        case "seeked":
+          if (p.canContinue() && !p.error()) updateStatus("ready");
+          break;
+        case "ready":
+          // Host reload: resume where the room should be. Publishing waits until the
+          // restore lands, so guests keep playing instead of pausing for the seek.
+          if (isHost && restorePendingRef.current && stateRef.current && !restoreAwaitRef.current) {
+            const s = stateRef.current;
+            restoreAwaitRef.current = s.playing ? "playing" : "seeked";
+            // Lead by the player's seek time, so the restored host doesn't land (and re-anchor the room) behind.
+            p.seek(expectedPosition(s, clockRef.current.now(), p.duration()) + (s.playing ? p.seekLead : 0));
+            if (s.playing) tryPlay(p);
+          }
+          break;
+        case "error":
+          setFailure({ key, message: detail?.message ?? "Playback failed." });
+          updateStatus("error");
+          break;
+      }
+      if (isHost && restorePendingRef.current && restoreAwaitRef.current === e) {
         restorePendingRef.current = false;
-        if (s.playing) tryPlay(v);
+        restoreAwaitRef.current = null;
+      }
+      if (isHost && !restorePendingRef.current && (e === "play" || e === "pause" || e === "seeked" || e === "playing")) {
+        publishState();
       }
     };
-
-    v.addEventListener("loadstart", onLoading);
-    v.addEventListener("waiting", onBuffering);
-    v.addEventListener("stalled", onBuffering);
-    v.addEventListener("canplay", onReady);
-    v.addEventListener("playing", onReady);
-    v.addEventListener("seeked", onReady);
-    v.addEventListener("loadedmetadata", onLoadedMetadata);
-    const hostEvents = ["play", "pause", "seeked", "playing"] as const;
-    for (const e of hostEvents) v.addEventListener(e, onHostChange);
+    const off = p.on(onEvent);
+    p.load(source);
     return () => {
-      v.removeEventListener("loadstart", onLoading);
-      v.removeEventListener("waiting", onBuffering);
-      v.removeEventListener("stalled", onBuffering);
-      v.removeEventListener("canplay", onReady);
-      v.removeEventListener("playing", onReady);
-      v.removeEventListener("seeked", onReady);
-      v.removeEventListener("loadedmetadata", onLoadedMetadata);
-      for (const e of hostEvents) v.removeEventListener(e, onHostChange);
+      off();
+      p.destroy();
+      if (playerRef.current === p) playerRef.current = null;
     };
-  }, [isHost, publishState, tryPlay, updateStatus, videoRef]);
+    // `key` identifies the media; the adapter must not be rebuilt for unrelated renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, isHost, stageRef]);
+
+  // Debug/test handle: lets browser tests drive whichever player is active, including
+  // cross-origin provider iframes. Exposes nothing the page doesn't already have.
+  useEffect(() => {
+    (window as unknown as { __watchparty?: unknown }).__watchparty = { player: () => playerRef.current };
+  }, []);
 
   // Host heartbeat: re-anchor the reference so followers never extrapolate for long.
   useEffect(() => {
     if (!isHost) return;
     const t = setInterval(() => {
-      const v = videoRef.current;
-      if (v && !v.paused && v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) publishState();
+      const p = playerRef.current;
+      if (p && p.playing() && p.canContinue()) publishState();
     }, HEARTBEAT_MS);
     return () => clearInterval(t);
-  }, [isHost, publishState, videoRef]);
+  }, [isHost, publishState]);
 
   // Host: optional pause-for-everyone while a guest buffers.
   const autoPausedRef = useRef(false);
   const someoneBuffering = participants.some((p) => p.role === "guest" && p.status === "buffering");
   useEffect(() => {
     if (!isHost || !settings.pauseOnBuffer) return;
-    const v = videoRef.current;
-    if (!v) return;
-    if (someoneBuffering && !v.paused) {
+    const p = playerRef.current;
+    if (!p) return;
+    if (someoneBuffering && p.playing()) {
       const t = setTimeout(() => {
         autoPausedRef.current = true;
-        v.pause();
+        p.pause();
       }, BUFFER_PAUSE_DELAY_MS);
       return () => clearTimeout(t);
     }
     if (!someoneBuffering && autoPausedRef.current) {
       autoPausedRef.current = false;
-      tryPlay(v);
+      tryPlay(p);
     }
-  }, [isHost, settings.pauseOnBuffer, someoneBuffering, tryPlay, videoRef]);
+  }, [isHost, settings.pauseOnBuffer, someoneBuffering, tryPlay]);
 
-  // Guest: drift correction loop against the authoritative clock.
+  // Guest: drift correction loop against the authoritative clock, through the adapter only.
   useEffect(() => {
     if (isHost) return;
+    let p: PlayerAdapter | null = null;
     let correcting = false;
+    let canNudgeRate = true;
     let lastSeekAt = 0;
+    // Seeks land off target (slow sources behind, instant ones ahead of the lead); learn by how much.
+    let extraLead = 0;
+    let measureLanding = false;
+    let retried = false;
     let lastPresenceDrift: number | null = null;
     let lastPresenceAt = 0;
 
+    const seekTo = (p: PlayerAdapter, target: number, now: number) => {
+      p.setRate(1);
+      p.seek(target + extraLead);
+      lastSeekAt = now;
+      correcting = false;
+      measureLanding = true;
+    };
+
     const tick = () => {
-      const v = videoRef.current;
+      if (playerRef.current !== p) {
+        // New source, new adapter: forget what we learned about the old one.
+        p = playerRef.current;
+        correcting = false;
+        canNudgeRate = true;
+        lastSeekAt = 0;
+        extraLead = 0;
+        measureLanding = false;
+        retried = false;
+      }
       const s = stateRef.current;
-      if (!v || !s || !mediaRef.current || v.readyState < HTMLMediaElement.HAVE_METADATA || v.error) return;
+      if (!p || !s || !mediaRef.current || !p.ready() || p.error()) return;
       const now = performance.now();
-      const expected = expectedPosition(s, clockRef.current.now(), v.duration);
-      const d = v.currentTime - expected;
+      const expected = expectedPosition(s, clockRef.current.now(), p.duration());
+      const d = p.currentTime() - expected;
 
       if (!s.playing) {
-        if (!v.paused) v.pause();
-        v.playbackRate = 1;
+        if (p.playing()) p.pause();
+        p.setRate(1);
         correcting = false;
         // Seeks are cheap while paused, so match the host frame closely.
-        if (Math.abs(d) > 0.1 && !v.seeking) v.currentTime = expected;
-      } else if (v.paused) {
+        if (Math.abs(d) > 0.1 && !p.seeking()) p.seek(expected);
+      } else if (!p.playing()) {
         // Blocked by autoplay policy: wait for the click instead of seeking every tick.
-        if (!needsGestureRef.current && !v.ended) {
-          if (Math.abs(d) > 0.15 && !v.seeking) {
-            v.currentTime = expected + SEEK_LEAD_S;
-            lastSeekAt = now;
-          }
-          tryPlay(v);
+        if (!needsGestureRef.current && !p.ended()) {
+          if (Math.abs(d) > 0.15 && !p.seeking()) seekTo(p, expected + p.seekLead, now);
+          tryPlay(p);
         }
-      } else if (!v.seeking && v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-        const c = decideCorrection(d, correcting, now - lastSeekAt);
+      } else if (!p.seeking() && p.canContinue()) {
+        if (measureLanding) {
+          measureLanding = false;
+          if (Math.abs(d) > DRIFT_IGNORE) {
+            extraLead = Math.min(MAX_EXTRA_LEAD, Math.max(-p.seekLead, extraLead - d));
+            // One immediate retry with the learned lead instead of a long rate nudge.
+            if (!retried) {
+              retried = true;
+              seekTo(p, expected + p.seekLead, now);
+              return;
+            }
+          } else {
+            retried = false;
+          }
+        }
+        // Seeking into what's already buffered is instant and exact; allow a second of playback after it.
+        const buffered = p.isBuffered?.(expected + p.seekLead + extraLead + 1) ?? false;
+        const c = decideCorrection(d, correcting, now - lastSeekAt, canNudgeRate, buffered);
         if (c.action === "seek") {
-          v.playbackRate = 1;
-          v.currentTime = expected + SEEK_LEAD_S;
-          lastSeekAt = now;
-          correcting = false;
-        } else {
-          if (v.playbackRate !== c.rate) v.playbackRate = c.rate;
+          seekTo(p, expected + p.seekLead, now);
+        } else if (p.setRate(c.rate)) {
           correcting = c.action === "rate";
+        } else {
+          // This player can't nudge its rate: correct by seeking from now on.
+          canNudgeRate = false;
+          correcting = false;
         }
       }
 
@@ -416,18 +521,18 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
     };
     const t = setInterval(tick, DRIFT_TICK_MS);
     return () => clearInterval(t);
-  }, [isHost, trackPresence, tryPlay, videoRef]);
+  }, [isHost, trackPresence, tryPlay]);
 
   const resumeWithGesture = useCallback(() => {
-    const v = videoRef.current;
-    if (!v) return;
+    const p = playerRef.current;
+    if (!p) return;
     needsGestureRef.current = false;
     setNeedsGesture(false);
     const s = stateRef.current;
     if (!s?.playing) return;
-    v.currentTime = expectedPosition(s, clockRef.current.now(), v.duration) + SEEK_LEAD_S;
-    tryPlay(v, true);
-  }, [tryPlay, videoRef]);
+    p.seek(expectedPosition(s, clockRef.current.now(), p.duration()) + p.seekLead);
+    tryPlay(p, true);
+  }, [tryPlay]);
 
   return {
     media,
@@ -439,8 +544,13 @@ export function useWatchParty({ roomId, clientId, role, videoRef }: Options) {
     drift,
     needsGesture,
     transportKind,
+    mediaError: failure?.key === key ? failure.message : null,
+    /** Current adapter, for local-only controls (volume, mute). */
+    playerRef,
     hostPresent,
     loadMedia,
+    subtitles,
+    setSubtitles,
     updateSettings,
     updateStatus,
     resumeWithGesture,

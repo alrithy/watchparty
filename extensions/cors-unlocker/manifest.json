@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "WatchParty CORS Unlocker",
+  "version": "0.1.0",
+  "description": "Lets WatchParty stream video files from debrid CDNs that don't send CORS headers. Desktop Chrome, Edge and Brave.",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "declarativeNetRequestWithHostAccess",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.vercel.app/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://*.real-debrid.com/*",
+    "https://*.rdeb.io/*",
+    "https://*.alldebrid.com/*",
+    "https://*.debrid.it/*",
+    "https://*.premiumize.me/*",
+    "https://*.torbox.app/*",
+    "https://*.debrid-link.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.vercel.app/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "options_page": "options.html"
+}

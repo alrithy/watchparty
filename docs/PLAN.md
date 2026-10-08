@@ -18,9 +18,10 @@ Small, vertical milestones. Each one is run, tested and committed before the nex
 - **Reconnect.** A guest that (re)joins sends `snapshot_request`; the host
   replies with `{ media, state, settings }`. The host keeps its session in
   `sessionStorage`, so a host reload resumes the room where it should be.
-- **Real-Debrid** (Milestones 3–4) lives in `lib/realdebrid/` behind a
-  route handler; tokens stay server-side, only the resolved media URL reaches
-  the browser, and video bytes go browser → CDN directly (never via Vercel).
+- **Paste and play.** `resolveSource` picks a player from the URL (a header-only
+  server probe helps with extensionless links). Every player implements
+  `PlayerAdapter`; the sync engine only uses that interface.
+- Video bytes always go browser → origin/CDN directly (never via Vercel).
 - **Local mode.** Without Supabase env vars the transport falls back to
   `BroadcastChannel`, so two tabs of one browser sync with no backend. This is
   what the automated tests use.
@@ -28,8 +29,7 @@ Small, vertical milestones. Each one is run, tested and committed before the nex
 ## Milestones
 
 1. Two tabs create/join a room and sync a direct MP4. ✅
-2. Verify sync from two separate devices (needs a Supabase project + deploy/tunnel).
-3. Host Real-Debrid: `lib/realdebrid/{client,resolve,types}.ts`, `POST /api/resolve`
-   using `REAL_DEBRID_TOKEN`, explicit RD error mapping.
-4. Guest Real-Debrid: guest pastes their own token, resolved per request, never stored.
-5. Deploy to Vercel and run the end-to-end test on the deployment.
+2. Verify sync from two separate devices (needs a Supabase project + deploy/tunnel). ✅
+3. Universal paste-and-play: one URL field; MP4/WebM, HLS, DASH, YouTube, Vimeo and
+   final CDN URLs through `PlayerAdapter`s. (Replaced the Host Real-Debrid plan; that
+   code stays isolated in `lib/realdebrid/` and out of the UI.)

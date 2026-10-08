@@ -3,7 +3,7 @@
 Private, invite-only synchronized video playback for a small group (built for 2,
 designed to allow more). Next.js + TypeScript + Tailwind + Supabase Realtime, deployed on Vercel.
 
-Status: **Milestone 1** (rooms + direct URL sync). See [docs/PLAN.md](docs/PLAN.md).
+Status: **Milestone 3** (universal paste-and-play). See [docs/PLAN.md](docs/PLAN.md).
 
 ## How it works
 
@@ -15,6 +15,80 @@ Status: **Milestone 1** (rooms + direct URL sync). See [docs/PLAN.md](docs/PLAN.
 - Presence shows who is connected and whether they are ready or buffering.
   The host can enable "Pause when a participant buffers".
 - Refresh/reconnect: guests ask the host for the latest state and jump back in.
+
+## Paste and play
+
+The host pastes any link into **Paste anything to watch** and presses **Play**.
+The app works out the source type; nobody picks a mode.
+
+| Source | Detected by | Player |
+| --- | --- | --- |
+| MP4, WebM, MOV, audio files | file extension | native `<video>`, Movi if the browser can't decode it |
+| MKV, AVI, TS/M2TS, WMV, FLV | file extension (or probed file name) | Movi (`movi-player`), native `<video>` if Movi can't |
+| HLS | `.m3u8` | `hls-video-element` (hls.js; native HLS on Safari/iOS) |
+| MPEG-DASH | `.mpd` | `dash-video-element` (dash.js, loaded only for DASH) |
+| YouTube | youtube.com / youtu.be / shorts / embed / live links | `youtube-video-element` (official IFrame Player API) |
+| Vimeo | vimeo.com / player.vimeo.com links (incl. unlisted hash) | official Vimeo Player SDK |
+| Final CDN/download URLs (Real-Debrid, Torrentio, Nuvio, ...) | extension, else server probe | whichever of the above fits |
+
+**Detection** (`lib/media/source.ts` → `resolveSource`) uses the URL alone. When the
+path gives no hint, `POST /api/probe` (`lib/media/probe.ts`) reads only the response
+headers (HEAD, falling back to the first 2 KB) to tell file / HLS / DASH / web page
+apart. It refuses private, loopback and link-local addresses on every redirect hop,
+and if it can't tell, the HTML5 player simply tries. Video bytes never pass through Vercel.
+
+**Players** (`lib/player/`) all implement one `PlayerAdapter` interface
+(`load, play, pause, seek, currentTime, duration, playing, destroy`, plus a few
+status getters and a uniform event stream). Files, HLS, DASH and YouTube go
+through one `MediaElementAdapter` over the media-element web components that
+react-player 3 is built on; Vimeo uses a thin wrapper over the official Player
+SDK. The sync engine (`components/useWatchParty.ts`) only talks to the
+interface. Library choices and licenses: [docs/OSS_REUSE_AUDIT.md](docs/OSS_REUSE_AUDIT.md).
+Providers without fine-grained playback rates (YouTube; Vimeo on basic accounts)
+correct drift by seeking only, with a 0.6 s dead band.
+
+**Can't be played directly:** web pages, DRM-protected media, private or
+embed-disabled YouTube/Vimeo videos, playlists/channels, non-http(s) links, and
+links that need a login show "This source can't be played directly." So does a
+YouTube/Vimeo player that never becomes ready within 20 s (for example YouTube's
+"confirm you're not a bot" check, which it shows to datacenter IPs). Media the
+browser can't decode shows "This source is not browser compatible." There is no
+DRM bypass, server-side download or transcoding.
+
+## Subtitles
+
+The host uploads a `.srt` or `.vtt` file or pastes a subtitle link (links the
+browser can't fetch because of CORS go through `POST /api/subtitles`, capped at
+2 MB). SRT is parsed by srt-parser-2 and WebVTT by the browser's own parser;
+Windows-1256 Arabic files are decoded too. The file travels to guests in the
+room snapshot (deflated), so late joiners get it. Cues are drawn over the player,
+so they work over YouTube/Vimeo as well, right-to-left where the text is. The
+host's delay (±0.5 s steps) applies to everyone; show/hide is per viewer.
+**Fullscreen** under the player keeps the subtitles visible.
+
+**Find Arabic subtitles** (host) searches OpenSubtitles and SubDL from our
+server (`POST /api/subtitles/search`, `POST /api/subtitles/download`). What to
+look for comes from the media file name (parsed by parse-torrent-title), the
+YouTube/Vimeo title (oEmbed), or a title the host types when neither is enough.
+Results are ranked with subliminal's weights (see `docs/OSS_REUSE_AUDIT.md`) and
+each shows its score and why it matched. The best one is applied automatically
+only when it matches the exact release, the IMDb id, title + year, or series +
+season + episode; otherwise the host picks from the top five. A chosen subtitle
+is shared exactly like an uploaded one, so delay, show/hide and late joiners work
+the same. Search is disabled until at least one provider key is set.
+
+For a TV episode, SubDL is asked for the exact series + season + episode first,
+then for that season's packs (`full_season=1`, `unpack=1`, keeping only the
+requested episode's file), then by the video's file name (only subtitles that name
+the episode). SubDL puts our API key in its download links; the key is stripped
+from every link and added back only on the server when downloading. Provider
+errors are shown as errors, never as "no subtitles". Each search response carries
+`diagnostics` (per query: HTTP status, provider status, error code, counts of
+results, subtitles, accepted and rejected-by-reason; no URLs or keys), and
+`{"diagnose": true}` in the request also runs every fallback query.
+
+The Milestone 3 Host Real-Debrid code (`lib/realdebrid/`, `POST /api/resolve`) is
+kept isolated but is not part of the UI; it does nothing unless `REAL_DEBRID_TOKEN` is set.
 
 ## Local setup
 
@@ -50,7 +124,10 @@ any Real-Debrid token in a `NEXT_PUBLIC_` variable.
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | browser | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser | Supabase anon key (Realtime only) |
-| `REAL_DEBRID_TOKEN` | server only | Host Real-Debrid API token (Milestone 3) |
+| `REAL_DEBRID_TOKEN` | server only | Optional, unused by the UI (dormant Host Real-Debrid route) |
+| `OPENSUBTITLES_API_KEY` | server only | Enables OpenSubtitles in "Find Arabic subtitles" (free consumer key from opensubtitles.com) |
+| `OPENSUBTITLES_USERNAME`, `OPENSUBTITLES_PASSWORD` | server only | Optional; logging in raises the daily download quota |
+| `SUBDL_API_KEY` | server only | Enables SubDL in "Find Arabic subtitles" (subdl.com account) |
 
 `.env*` files are git-ignored except `.env.example`.
 
@@ -67,23 +144,84 @@ npm run dev        # dev server
 npm run build      # production build
 npm run lint       # eslint
 npm run typecheck  # tsc --noEmit
-npm test           # unit tests (drift math, clock offset, ids, url handling)
-npm run e2e        # two-tab browser sync test (local mode, generates a test clip with ffmpeg)
+npm test           # unit tests (drift math, clock offset, ids, source detection, probe safety, Real-Debrid parsing)
+npm run e2e        # browser suite per source type (local mode, generates test media with ffmpeg)
 ```
 
 `npm run e2e` needs `ffmpeg` and Playwright's Chromium (`npx playwright install chromium`
 if you don't have it). Set `CHROMIUM_PATH` to use a specific Chromium binary.
+The suite answers YouTube's and Vimeo's script URLs with stand-ins
+(`tests/e2e/fakes/`) that implement the same API on the test clip; set
+`E2E_REAL_PROVIDERS=1` to load the real ones. Test media for `<video>` is VP9/Opus
+because Playwright's Chromium has no H.264; the Movi fixtures (MKV H.264 + AC-3, an
+extensionless HEVC Main10 + E-AC-3 file, a one-hour MKV, an AVI) are generated too.
 
-## Playback compatibility
+## Playback compatibility (Movi fallback)
 
-Native `<video>` is used first; `hls.js` is loaded only for `.m3u8` streams in browsers
-without native HLS. Sources the browser can't decode (e.g. many MKV/HEVC/TrueHD files)
-show **"This source is not browser compatible."** Transcoding is out of scope for V1.
+Direct files the browser can't decode itself (MKV, HEVC/H.265 incl. Main10,
+AC-3/E-AC-3/TrueHD/DTS audio, AVI, MPEG-TS) play through
+[movi-player](https://www.npmjs.com/package/movi-player) 0.4.1 (Apache-2.0):
+FFmpeg (WASM) demuxes the file in the browser, WebCodecs decodes it, and it draws
+on a canvas. `lib/player/movi.ts` maps it onto `PlayerAdapter`; our subtitle
+overlay, controls bar and sync engine stay the same.
+
+- **Routing** (`lib/player/create.ts`, `lib/player/fallback.ts`): MKV/AVI/TS-type
+  files start on Movi; everything else starts on `<video>`. If `<video>` fails
+  with "not supported", "decode error" or "no video track", the same URL is retried
+  once on Movi at the same position, play state, volume and mute (and the other way
+  round). The switch is local: the room's source and revision don't change, so a host
+  on Movi and a guest on `<video>` stay in sync. "Not browser compatible" only shows
+  after both have failed.
+- **Loading**: Movi (~15 MB with its WASM) is a separate chunk, fetched only when a
+  file needs it. YouTube, Vimeo, HLS, DASH and playable MP4/WebM never load it.
+- **Memory**: Movi reads the file with HTTP Range requests and keeps at most 128 MB
+  of it (`MOVI_CACHE_MB`); it never downloads the whole movie.
+- **CORS / Range**: unlike `<video>`, Movi needs the server to allow cross-origin
+  `fetch` with Range. Bytes are never proxied through Vercel and nothing is
+  transcoded on a server; see the next section for what happens instead.
+
+## Links that block browser byte-range access
+
+Debrid links (Real-Debrid, Nuvio/Torrentio...) usually redirect one or more times
+before reaching the CDN that serves the file. If a hop in that chain sends no CORS
+headers, the browser refuses Movi's reads even when the final CDN would allow them.
+
+1. **Redirect resolver** (`POST /api/media/resolve`, `lib/media/resolve-stream.ts`).
+   Takes `{ url }` and follows the chain by hand (`redirect: "manual"`) with a
+   one-byte `Range: bytes=0-0` request per hop, cancelling each body unread. Every
+   hop goes through the probe's SSRF guard (`assertPublic` in `lib/media/probe.ts`):
+   http/https only; ports 80/443/8080/8443; no localhost, private, link-local,
+   CGNAT or metadata addresses (IPv4 and IPv6, after DNS). At most 5 redirects,
+   loops refused, 9 s total. Relative `Location`s are resolved; absolute ones are
+   kept byte-for-byte so signed query strings survive. No cookies, no
+   Authorization header, nothing logged. Returns `{ originalUrl, finalUrl,
+   redirected, status, supportsRange, contentType, cors }`. It never returns video bytes.
+2. **One retry** (`lib/player/fallback.ts`, `lib/media/refine.ts`). When Movi reports
+   blocked byte-range access, the player calls the resolver once, checks from the page
+   that the final URL is readable (a one-byte CORS `fetch`), and restarts Movi there
+   at the same position, play state, volume and mute. The room's source and revision
+   don't change, so subtitles, delay and sync carry on as before. No second pass.
+3. **Final CDN blocks CORS too** (internal reason `FINAL_CDN_CORS_BLOCKED`). The viewer
+   sees *"The video's server (host) blocks browser streaming of this format. On desktop
+   Chrome, Edge or Brave, the WatchParty CORS Unlocker extension fixes this; phone
+   browsers can't play this link."* instead of a format error.
+4. **CORS Unlocker** (`extensions/cors-unlocker/`, optional, desktop only, not part of
+   the web app). See its README.
+
+Possible later fallbacks for Real-Debrid links, **not built**: RD's
+`GET /streaming/transcode/{id}` (HLS from RD) and `/unrestrict/link` with `remote=1`.
+Both depend on how RD binds links to the requesting IP, so they need checking
+against a real account first.
 
 ## Security notes
 
-- Real-Debrid tokens will only ever be read on the server; they never appear in HTML,
-  bundles, Realtime messages, URLs or logs.
+- The Real-Debrid token is only read on the server (`lib/realdebrid/client.ts` imports
+  `server-only`); it never appears in HTML, bundles, Realtime messages, URLs or logs.
+  Only the generated media URL is shared with the room, because guests need it to play.
+- Subtitle provider keys are read only in `lib/subtitles/search/` (`server-only`). The
+  OpenSubtitles key goes in a request header; signed download links are fetched on the
+  server and never returned, logged or shared. Search sends only the media file name,
+  never its query string.
 - Media labels shown in the UI strip query strings (signed URLs often carry tokens).
 - Room codes are random 6-character codes. Supabase public channels are reachable by
   anyone who knows the code; treat the invite link as the secret.
