@@ -153,6 +153,12 @@ export class MoviPlayerAdapter implements PlayerAdapter {
       return this.fail(moviErrorMessage(classifyMoviError(e instanceof Error ? e.message : String(e))));
     }
     if (this.destroyed || this.failure) return;
+    // Movi draws onto a canvas (not a <video>), so use its decoded track metadata.
+    // This only changes layout; the canvas renderer still controls aspect fit.
+    const videoTrack = player.getVideoTracks()[0];
+    if (videoTrack?.width && videoTrack?.height) {
+      this.opts.onVideoSize?.(videoTrack.width, videoTrack.height);
+    }
     player.setVolume(this.volume);
     player.setMuted(this.muted);
     if (this.currentRate !== 1) player.setPlaybackRate(this.currentRate);
