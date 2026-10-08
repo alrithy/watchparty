@@ -189,7 +189,7 @@ export class FallbackPlayer implements PlayerAdapter {
       this.events.emit("error", { message: final });
       return;
     }
-    if (e === "playing") this.session?.playing();
+    if (e === "playing") this.session?.playing(this.inner.mediaInfo?.());
     if (e === "ready") {
       this.clearStartTimer();
       this.session?.ready(this.inner.mediaInfo?.());

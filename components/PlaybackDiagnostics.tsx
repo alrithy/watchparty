@@ -110,7 +110,7 @@ function AttemptRow({ a }: { a: Attempt }) {
       {m && (
         <span className="text-zinc-500">
           {" "}
-          · {m.width}×{m.height}
+          · {m.width && m.height ? `${m.width}×${m.height}` : "size unknown"}
           {m.container ? ` ${m.container}` : ""}
           {m.videoCodec ? ` ${m.videoCodec}` : ""}
           {m.audioCodec ? ` / ${m.audioCodec}` : ""}

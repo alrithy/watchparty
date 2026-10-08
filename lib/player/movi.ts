@@ -308,8 +308,7 @@ export class MoviPlayerAdapter implements PlayerAdapter {
     const video = info.tracks.find((t) => t.type === "video");
     const audio = info.tracks.filter((t) => t.type === "audio");
     return {
-      width: video?.width ?? 0,
-      height: video?.height ?? 0,
+      ...(video?.width && video?.height ? { width: video.width, height: video.height } : {}),
       duration: this.duration(),
       container: info.formatName,
       ...(video ? { videoCodec: video.codecString || video.codec } : {}),

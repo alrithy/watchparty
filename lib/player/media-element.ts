@@ -323,11 +323,16 @@ export class MediaElementAdapter implements PlayerAdapter {
     const el = this.el;
     if (!el || this.iframe || !this.isReady) return null;
     const audio = (el as unknown as { audioTracks?: { length: number } }).audioTracks;
-    const levels = (el.api as { levels?: { videoCodec?: string; audioCodec?: string }[]; currentLevel?: number } | null | undefined)?.levels;
-    const level = levels?.[Math.max(0, (el.api as { currentLevel?: number }).currentLevel ?? 0)];
+    type Level = { videoCodec?: string; audioCodec?: string; width?: number; height?: number };
+    const api = el.api as { levels?: Level[]; currentLevel?: number } | null | undefined;
+    const levels = api?.levels;
+    const level = levels?.[Math.max(0, api?.currentLevel ?? 0)];
+    // The element reports 0×0 until a frame is decoded (hls.js on Managed Media Source does
+    // this at loadedmetadata); fall back to the playing level's size, else leave it unknown.
+    const width = el.videoWidth || level?.width || 0;
+    const height = el.videoHeight || level?.height || 0;
     return {
-      width: el.videoWidth ?? 0,
-      height: el.videoHeight ?? 0,
+      ...(width && height ? { width, height } : {}),
       duration: this.duration(),
       ...(audio ? { audioTracks: audio.length } : {}),
       ...(level?.videoCodec ? { videoCodec: level.videoCodec } : {}),

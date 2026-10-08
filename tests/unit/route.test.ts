@@ -208,6 +208,17 @@ describe("diagnostics scrub any error text", () => {
   });
 });
 
+describe("picture size in diagnostics", () => {
+  it("stays unknown at metadata and fills in once frames play", () => {
+    const s = playbackDiagnostics.begin(src("hls", "https://cdn.example/master.m3u8"), { engines: ["hlsjs"], reasons: [] }, iphone, "smart");
+    s.attempt("hlsjs");
+    s.ready({ duration: 1800, audioTracks: 3, videoCodec: "avc1.640015" });
+    expect(playbackDiagnostics.snapshot()!.attempts[0].media).not.toHaveProperty("width");
+    s.playing({ width: 1920, height: 1080, duration: 1800, audioTracks: 3, videoCodec: "avc1.640015" });
+    expect(playbackDiagnostics.snapshot()!.attempts[0]).toMatchObject({ outcome: "playing", media: { width: 1920, height: 1080 } });
+  });
+});
+
 describe("createPlayer without a usable engine", () => {
   it("fails with the plan's reason and records it", async () => {
     const el = () => ({ className: "", dataset: {} as Record<string, string>, remove() {}, appendChild() {} });

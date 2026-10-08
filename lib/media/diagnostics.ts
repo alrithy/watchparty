@@ -161,13 +161,17 @@ export class DiagnosticsSession {
     });
   }
 
-  playing() {
+  /** Frames are advancing; `media` refreshes facts that were unknown at metadata time (picture size). */
+  playing(media?: MediaInfoSummary | null) {
     this.edit((a, elapsed) => {
-      if (a.playingMs !== undefined || a.outcome === "failed") return;
+      if (a.outcome === "failed") return;
+      if (media) a.media = media;
+      if (a.playingMs !== undefined) return;
       a.playingMs = elapsed;
       a.outcome = "playing";
     });
   }
+
 
   resolved(finalHost: string, retried: boolean) {
     this.edit((a) => {

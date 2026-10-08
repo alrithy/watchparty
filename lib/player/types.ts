@@ -54,8 +54,9 @@ export interface PlayerAdapter {
 }
 
 export type MediaInfoSummary = {
-  width: number;
-  height: number;
+  /** Picture size; absent while unknown (e.g. before the first frame of an MSE stream). */
+  width?: number;
+  height?: number;
   /** Seconds, or NaN. */
   duration: number;
   container?: string;
