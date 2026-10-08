@@ -114,7 +114,7 @@ function AttemptRow({ a }: { a: Attempt }) {
           {m.container ? ` ${m.container}` : ""}
           {m.videoCodec ? ` ${m.videoCodec}` : ""}
           {m.audioCodec ? ` / ${m.audioCodec}` : ""}
-          {m.audioTracks !== undefined ? ` · ${m.audioTracks} audio` : ""}
+          {m.audioTracks ? ` · ${m.audioTracks} audio` : ""}
         </span>
       )}
       {a.resolved && <span className="text-zinc-500"> · redirect → {a.resolved.finalHost}</span>}

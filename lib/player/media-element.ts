@@ -334,7 +334,8 @@ export class MediaElementAdapter implements PlayerAdapter {
     return {
       ...(width && height ? { width, height } : {}),
       duration: this.duration(),
-      ...(audio ? { audioTracks: audio.length } : {}),
+      // Safari fills audioTracks for HLS only after the first segments; 0 means "not known yet".
+      ...(audio?.length ? { audioTracks: audio.length } : {}),
       ...(level?.videoCodec ? { videoCodec: level.videoCodec } : {}),
       ...(level?.audioCodec ? { audioCodec: level.audioCodec } : {}),
       ...(levels ? { renditions: levels.length } : {}),

@@ -279,3 +279,19 @@ DRM_AUTH_REQUIRED.
 6. DASH (`.mpd`) on iPhone ≥ 17.1.
 7. Expired link (403/404/410) → EXPIRED_OR_UNAUTHORIZED.
 8. `?routing=legacy` on the same HLS link to compare old vs new engine.
+
+### Real-device results so far (iPhone Safari tab, reported by Hassan, 2026-10-08)
+
+| Test | Routing | Engine shown | Result |
+| --- | --- | --- | --- |
+| Apple bipbop advanced fMP4 HLS | legacy | hls.js | PASSED (picture + sound) |
+| Same | smart | Browser player (Safari HLS) | PASSED (picture + sound) |
+| Same, two devices | smart | Browser player | PASSED (stayed in sync, user-observed; no measured drift) |
+| 30-min seek / pause / reconnect | – | – | not yet run |
+| Home Screen Web App | – | – | not yet run |
+| Verified no-CORS HLS | – | – | not yet run |
+| AirPlay | – | – | not yet run |
+
+Diagnostics showed `0×0` / `0 audio` during these runs because Safari and
+hls.js report size and audio tracks only after the first frames; fixed in
+`3e9ce67` / the following commit to show "unknown" and refresh at playback.
