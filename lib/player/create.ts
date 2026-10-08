@@ -28,7 +28,7 @@ export function createPlayer(
   const session = playbackDiagnostics.begin(source, plan, caps, routing);
   if (!plan.engines.length) {
     const message = plan.unsupported ?? "This source can't be played on this device.";
-    session.failed("ENGINE_UNAVAILABLE", message);
+    session.unavailable(message);
     return new UnsupportedPlayer(source.kind, container, message);
   }
   const first = plan.engines[0];
@@ -38,7 +38,7 @@ export function createPlayer(
     p.on((e, detail) => {
       if (e === "ready") session.ready(null);
       else if (e === "playing") session.playing();
-      else if (e === "error") session.failed(classifyFailure(first, detail?.message ?? ""), detail?.message ?? "Playback failed.");
+      else if (e === "error") session.failed(classifyFailure(first, detail?.message ?? ""), detail?.message ?? "Playback failed.", true);
     });
     return p;
   }

@@ -376,6 +376,64 @@ describe("routed engines", () => {
     ]);
   });
 
+  const NETWORK = "Network error while loading the video. Check the link and try again.";
+
+  it.each([
+    ["MEDIA_ERR_NETWORK", NETWORK, "NETWORK_ERROR"],
+    ["MEDIA_ERR_SRC_NOT_SUPPORTED", INCOMPATIBLE_MESSAGE, "FORMAT_UNSUPPORTED"],
+  ])("gives hls.js one try after Safari's HLS player reports %s", async (_name, message, code) => {
+    FakeAdapter.made = [];
+    const session = playbackDiagnostics.begin(hls, { engines: ["native", "hlsjs"], reasons: [] }, NO_CAPABILITIES, "smart");
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "hlsjs"], undefined, { kind: "hls", session });
+    const errors: string[] = [];
+    p.on((e, d) => e === "error" && errors.push(d?.message ?? ""));
+    p.load(hls);
+    FakeAdapter.made[0].emit("error", { message });
+    await tick();
+    expect(FakeAdapter.made).toHaveLength(2);
+    expect(p.activeEngine()).toBe("hlsjs");
+    expect(playbackDiagnostics.snapshot()!.attempts[0]).toMatchObject({ engine: "native", outcome: "failed", code });
+    // hls.js fails too: reported once, never a third engine or a loop back to native.
+    FakeAdapter.made[1].emit("error", { message: "Network error while loading the stream." });
+    await tick();
+    expect(FakeAdapter.made).toHaveLength(2);
+    expect(errors).toEqual(["Network error while loading the stream."]);
+    expect(playbackDiagnostics.snapshot()!.error).toMatchObject({ code: "NETWORK_ERROR" });
+    p.destroy();
+  });
+
+  it("gives up on a Safari HLS start that stalls without an error, once", async () => {
+    FakeAdapter.made = [];
+    const session = playbackDiagnostics.begin(hls, { engines: ["native", "hlsjs"], reasons: [] }, NO_CAPABILITIES, "smart");
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "hlsjs"], undefined, { kind: "hls", session, startTimeoutMs: 5 });
+    p.load(hls);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(FakeAdapter.made).toHaveLength(2);
+    expect(playbackDiagnostics.snapshot()!.attempts[0]).toMatchObject({ engine: "native", code: "NETWORK_TIMEOUT" });
+    // hls.js is the last engine: a slow start there just keeps waiting.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(FakeAdapter.made).toHaveLength(2);
+    p.destroy();
+  });
+
+  it("never switches for a stall once Safari's HLS player has started", async () => {
+    FakeAdapter.made = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "hlsjs"], undefined, { kind: "hls", startTimeoutMs: 5 });
+    p.load(hls);
+    const native = FakeAdapter.made[0];
+    native.isReady = true;
+    native.emit("ready");
+    native.emit("waiting");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(FakeAdapter.made).toHaveLength(1);
+    p.destroy();
+  });
+
+  it("still keeps a network error on a direct file on <video>", () => {
+    expect(shouldFallBack("native", NETWORK, "file")).toBe(false);
+    expect(shouldFallBack("native", NETWORK, "hls")).toBe(true);
+  });
+
   it("never switches engines for DRM", async () => {
     FakeAdapter.made = [];
     const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["hlsjs", "native"], undefined, { kind: "hls" });

@@ -237,6 +237,33 @@ merge.
 
 ## 10. Real iPhone test plan (required before merge)
 
+Engine switching rules in Phase 1 (one switch per source, never a loop):
+
+| First engine fails with | Switches to the next engine? |
+| --- | --- |
+| Safari HLS: can't decode (`MEDIA_ERR_SRC_NOT_SUPPORTED` / `DECODE`) | yes, hls.js |
+| Safari HLS: `MEDIA_ERR_NETWORK` | yes, hls.js (it retries segments itself) |
+| Safari HLS: no metadata within 15 s and no error | yes, hls.js (code NETWORK_TIMEOUT) |
+| Safari HLS: stalls after it started | no (ordinary buffering; sync handles it) |
+| `<video>` file: can't decode | yes, Movi |
+| `<video>` file: network error | no (Movi would hit the same server) |
+| Movi: anything | yes, `<video>` (after the redirect resolver for Range/CORS) |
+| DRM | never |
+| The second engine fails | no third try; error shown and recorded |
+
+Baseline note: this branch starts from `c1db769` and does not contain PR #4
+(iPhone immersive fullscreen and subtitle layout). A video-only native
+fullscreen on a PR #6 preview is the pre-#4 behaviour, not a regression. Once
+#4 is merged, #6 is updated onto it and re-checked for intrinsic sizing,
+full-window immersive mode, Arabic cues and sync.
+
+HLS test sources: Apple's examples
+(https://developer.apple.com/streaming/examples/), e.g.
+`https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8`.
+For the no-CORS cell, first confirm with `curl -sI -H "Origin: https://<preview host>"`
+that the master playlist, a media playlist and a segment all lack
+`Access-Control-Allow-Origin`; a public URL is not no-CORS by default.
+
 Host and guest on separate devices; Safari tab **and** Home Screen Web App.
 For each row record the diagnostics panel's Copy output (it contains no URLs
 or tokens) and one of PASSED / FAILED / UNSUPPORTED_BY_PROVIDER /

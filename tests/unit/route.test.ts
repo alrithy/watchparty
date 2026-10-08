@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { detectCapabilities, NO_CAPABILITIES, type Capabilities, type CapabilityEnv } from "@/lib/media/capabilities";
 import { moviContentType, planPlayback } from "@/lib/media/route";
 import { classifyFailure } from "@/lib/media/errors";
-import { playbackDiagnostics, reportText, safeExtension, safeHost } from "@/lib/media/diagnostics";
+import { playbackDiagnostics, reportText, safeExtension, safeHost, safeMessage } from "@/lib/media/diagnostics";
 import { DRM_MESSAGE, INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE } from "@/lib/media/source";
 import { MOVI_INCOMPATIBLE_MESSAGE, RANGE_BLOCKED_MESSAGE, moviErrorMessage } from "@/lib/player/movi";
 import { finalCdnBlockedMessage } from "@/lib/media/refine";
@@ -168,6 +168,67 @@ describe("diagnostics never keep URLs", () => {
     const text = reportText(r);
     expect(text).not.toMatch(/APIKEY123|SECRET|Silo|resolve\/realdebrid/);
     expect(text).toContain("torrentio.example");
+  });
+});
+
+describe("diagnostics scrub any error text", () => {
+  it.each([
+    "Failed to fetch https://abc.download.real-debrid.com/d/ABCDEF123/Silo.S03E01.mkv?token=SECRET",
+    "GET //cdn.example/resolve/realdebrid/APIKEY123/xyz failed",
+    "manifest error at www.example.com/hls/SECRET/master.m3u8",
+    "segment 4 failed (sig=SECRET&exp=1760000000)",
+    "redirect to http://10.0.0.1:8080/x?api_key=SECRET",
+  ])("%s", (raw) => {
+    const out = safeMessage(raw);
+    expect(out).not.toMatch(/SECRET|APIKEY123|ABCDEF123|Silo|real-debrid\.com\/d/);
+  });
+
+  it("keeps our own sentences intact and caps length", () => {
+    expect(safeMessage(INCOMPATIBLE_MESSAGE)).toBe(INCOMPATIBLE_MESSAGE);
+    expect(safeMessage(finalCdnBlockedMessage("cdn.example", false))).toBe(finalCdnBlockedMessage("cdn.example", false));
+    expect(safeMessage("too long ".repeat(100))).toHaveLength(300);
+  });
+
+  it("never stores a URL an engine put in its error", () => {
+    const s = playbackDiagnostics.begin(src("file", "https://cdn.example/a.mp4"), { engines: ["native"], reasons: [] }, chrome, "smart");
+    s.attempt("native");
+    s.failed("UNKNOWN", "Decoder error for https://cdn.example/a.mp4?token=SECRET", true);
+    const text = reportText(playbackDiagnostics.snapshot()!);
+    expect(text).not.toContain("SECRET");
+    expect(playbackDiagnostics.snapshot()!.error).toMatchObject({ code: "UNKNOWN" });
+  });
+
+  it("records a source no engine here can play, with no attempt", () => {
+    const plan = planPlayback(src("dash", "https://cdn.example/a.mpd"), oldIphone);
+    const s = playbackDiagnostics.begin(src("dash", "https://cdn.example/a.mpd"), plan, oldIphone, "smart");
+    s.unavailable(plan.unsupported!);
+    const r = playbackDiagnostics.snapshot()!;
+    expect(r.attempts).toEqual([]);
+    expect(r.error).toEqual({ code: "ENGINE_UNAVAILABLE", message: plan.unsupported });
+  });
+});
+
+describe("createPlayer without a usable engine", () => {
+  it("fails with the plan's reason and records it", async () => {
+    const el = () => ({ className: "", dataset: {} as Record<string, string>, remove() {}, appendChild() {} });
+    const g = globalThis as unknown as { document?: unknown };
+    const had = g.document;
+    g.document = { createElement: el };
+    try {
+      const { createPlayer } = await import("@/lib/player/create");
+      const p = createPlayer(src("dash", "https://cdn.example/a.mpd?sig=SECRET"), el() as unknown as HTMLElement, { controls: false }, oldIphone, "smart");
+      const errors: string[] = [];
+      p.on((e, d) => e === "error" && errors.push(d?.message ?? ""));
+      p.load(src("dash", "https://cdn.example/a.mpd"));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(errors[0]).toMatch(/can't play DASH/);
+      expect(p.error()).toMatch(/iOS 17\.1/);
+      expect(playbackDiagnostics.snapshot()!.error?.code).toBe("ENGINE_UNAVAILABLE");
+      expect(reportText(playbackDiagnostics.snapshot()!)).not.toContain("SECRET");
+      p.destroy();
+    } finally {
+      g.document = had;
+    }
   });
 });
 

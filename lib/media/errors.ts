@@ -1,4 +1,4 @@
-import { DRM_MESSAGE, INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE } from "@/lib/media/source";
+import { DRM_MESSAGE, INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE, STREAM_START_TIMEOUT_MESSAGE } from "@/lib/media/source";
 
 /**
  * Why a playback attempt failed, as a stable code for diagnostics and tests.
@@ -37,6 +37,7 @@ export function classifyFailure(engine: string, message: string, reason?: string
   if (/no playable video track/.test(m)) return "VIDEO_UNSUPPORTED";
   if (/couldn't load the|not available on this device|can't play .* streams/.test(m)) return "ENGINE_UNAVAILABLE";
   if (m.startsWith("network error")) return "NETWORK_ERROR";
+  if (message === STREAM_START_TIMEOUT_MESSAGE) return "NETWORK_TIMEOUT";
   if (message.startsWith(INCOMPATIBLE_MESSAGE)) return engine === "hlsjs" || engine === "dashjs" ? "MSE_MANIFEST" : "FORMAT_UNSUPPORTED";
   if (message === NOT_DIRECT_MESSAGE) return engine === "youtube" || engine === "vimeo" ? "NETWORK_TIMEOUT" : "NOT_MEDIA";
   return "UNKNOWN";

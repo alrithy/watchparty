@@ -30,8 +30,30 @@ export type PlaybackReport = {
   source: { kind: MediaSource["kind"]; host: string; extension: string | null; mime: string | null };
   plan: { engines: Engine[]; reasons: string[] };
   attempts: Attempt[];
+  /** Why playback ended in failure on this device, including when no engine could even start. */
+  error?: { code: PlaybackErrorCode; message: string };
   capabilities: Capabilities;
 };
+
+const URLISH = /\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s"'<>()]+/gi;
+const PATHISH = /(?:\/[^\s"'<>()/]+){2,}/g;
+const PARAMISH = /([a-z0-9_.-]+)=[^\s"'<>()&;,]+/gi;
+const TOKENISH = /\b[A-Za-z0-9_-]{24,}\b/g;
+const MAX_MESSAGE = 300;
+
+/**
+ * An error sentence made safe to keep: whatever an engine, provider or server put in it,
+ * URLs, multi-segment paths, key=value parameters and long opaque tokens are cut out, so a signed link or an API key
+ * embedded in one can't reach the report.
+ */
+export function safeMessage(message: string): string {
+  return message
+    .replace(URLISH, "[link]")
+    .replace(PATHISH, "[path]")
+    .replace(PARAMISH, "$1=[value]")
+    .replace(TOKENISH, "[token]")
+    .slice(0, MAX_MESSAGE);
+}
 
 /** Host name only: paths and query strings often carry signed tokens or API keys. */
 export function safeHost(url: string): string {
@@ -103,7 +125,7 @@ class DiagnosticsStore {
 
   private publish() {
     const d = this.draft;
-    this.published = d ? { ...d, plan: { ...d.plan }, attempts: d.attempts.map((a) => ({ ...a })) } : null;
+    this.published = d ? { ...d, plan: { ...d.plan }, attempts: d.attempts.map((a) => ({ ...a })), ...(d.error ? { error: { ...d.error } } : {}) } : null;
     for (const l of this.listeners) l();
   }
 }
@@ -153,12 +175,20 @@ export class DiagnosticsSession {
     });
   }
 
-  failed(code: PlaybackErrorCode, message: string) {
+  /** The current attempt failed; `final` when no engine is left to try. */
+  failed(code: PlaybackErrorCode, message: string, final = false) {
+    const safe = safeMessage(message);
     this.edit((a) => {
       a.outcome = "failed";
       a.code = code;
-      a.message = message;
+      a.message = safe;
     });
+    if (final) this.store.update(this.id, (r) => void (r.error = { code, message: safe }));
+  }
+
+  /** No engine on this device can play the source, so there is no attempt to record. */
+  unavailable(message: string) {
+    this.store.update(this.id, (r) => void (r.error = { code: "ENGINE_UNAVAILABLE", message: safeMessage(message) }));
   }
 }
 

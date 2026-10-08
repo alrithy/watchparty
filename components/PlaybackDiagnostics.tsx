@@ -41,6 +41,11 @@ export function PlaybackDiagnostics() {
     <details className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 text-sm" data-testid="playback-diagnostics">
       <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-zinc-500">
         Playback details
+        {!active && report.error && (
+          <span className="ml-2 font-mono normal-case tracking-normal text-red-300" data-testid="diag-engine" data-engine="">
+            {report.error.code}
+          </span>
+        )}
         {active && (
           <span className="ml-2 font-mono normal-case tracking-normal text-zinc-300" data-testid="diag-engine" data-engine={active.engine}>
             {ENGINE_NAMES[active.engine] ?? active.engine}
@@ -60,6 +65,11 @@ export function PlaybackDiagnostics() {
             <li key={r}>{r}</li>
           ))}
         </ul>
+        {report.error && (
+          <p className="font-mono text-xs text-red-300" data-testid="diag-error">
+            {report.error.code}: {report.error.message}
+          </p>
+        )}
         <ol className="space-y-1" data-testid="diag-attempts">
           {report.attempts.map((a, i) => (
             <AttemptRow key={i} a={a} />

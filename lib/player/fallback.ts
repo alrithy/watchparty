@@ -1,5 +1,5 @@
 import type { MediaSource, SourceKind } from "@/lib/room/types";
-import { INCOMPATIBLE_MESSAGE } from "@/lib/media/source";
+import { INCOMPATIBLE_MESSAGE, STREAM_START_TIMEOUT_MESSAGE } from "@/lib/media/source";
 import { Emitter, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
 import { MediaElementAdapter, type PlayerOptions } from "@/lib/player/media-element";
 import { MOVI_INCOMPATIBLE_MESSAGE, MoviPlayerAdapter, RANGE_BLOCKED_MESSAGE } from "@/lib/player/movi";
@@ -12,12 +12,24 @@ import type { Engine as AnyEngine } from "@/lib/media/route";
 /** Engines this player can switch between (the provider iframes have their own adapters). */
 export type Engine = Exclude<AnyEngine, "youtube" | "vimeo">;
 
-/** Whether a failure on `engine` is worth one retry on the next engine. */
-export function shouldFallBack(engine: Engine, message: string): boolean {
-  if (isTerminal(classifyFailure(engine, message))) return false;
-  // <video> said it can't decode this (MEDIA_ERR_SRC_NOT_SUPPORTED / MEDIA_ERR_DECODE / no video track).
-  // A network error from <video> would fail the same way anywhere else.
-  if (engine === "native") return message.startsWith(INCOMPATIBLE_MESSAGE);
+/** How long Safari's own HLS player may take to reach metadata before hls.js gets its one try. */
+export const NATIVE_HLS_START_TIMEOUT_MS = 15_000;
+
+/**
+ * Whether a failure on `engine` is worth one retry on the next engine (never more:
+ * the player switches at most once per source).
+ */
+export function shouldFallBack(engine: Engine, message: string, kind: SourceKind = "file"): boolean {
+  const code = classifyFailure(engine, message);
+  if (isTerminal(code)) return false;
+  if (engine === "native") {
+    // Safari's HLS player failed to decode, to load, or to start at all: hls.js fetches and
+    // retries on its own (it needs CORS, which Safari doesn't), so it gets one try.
+    if (kind === "hls") return code === "FORMAT_UNSUPPORTED" || code === "NETWORK_ERROR" || code === "NETWORK_TIMEOUT";
+    // A file <video> can't decode (MEDIA_ERR_SRC_NOT_SUPPORTED / MEDIA_ERR_DECODE / no video track).
+    // A network error from <video> would fail the same way on Movi.
+    return message.startsWith(INCOMPATIBLE_MESSAGE);
+  }
   // Movi failed for any reason (no WebCodecs, CORS, no Range): <video> needs neither CORS nor Range.
   // hls.js failed: the browser's own HLS player (where there is one) needs no CORS either.
   return true;
@@ -38,6 +50,8 @@ export type FallbackOptions = {
   kind?: SourceKind;
   /** Where attempts are recorded for the diagnostics panel. */
   session?: DiagnosticsSession;
+  /** Override of NATIVE_HLS_START_TIMEOUT_MS (tests). */
+  startTimeoutMs?: number;
 };
 
 /**
@@ -58,6 +72,9 @@ export class FallbackPlayer implements PlayerAdapter {
   private readonly session: DiagnosticsSession | null;
   /** Index of the engine in use within `order`. */
   private step = 0;
+  private readonly startTimeoutMs: number;
+  /** Fires when Safari's HLS player hasn't started; cleared on ready, switch or destroy. */
+  private startTimer: ReturnType<typeof setTimeout> | null = null;
   private inner!: PlayerAdapter;
   private engine!: Engine;
   private off: (() => void) | null = null;
@@ -84,6 +101,7 @@ export class FallbackPlayer implements PlayerAdapter {
   ) {
     this.kind = options.kind ?? "file";
     this.session = options.session ?? null;
+    this.startTimeoutMs = options.startTimeoutMs ?? NATIVE_HLS_START_TIMEOUT_MS;
     this.use(order[0]);
   }
 
@@ -122,6 +140,27 @@ export class FallbackPlayer implements PlayerAdapter {
     this.off = this.inner.on((e, detail) => this.onInner(e, detail));
   }
 
+  /**
+   * A stalled start raises no error on Safari's HLS player (it just never loads metadata).
+   * When hls.js is next in line, give up on the native player after a bound and let it try.
+   * Stalls after playback started are ordinary buffering and never switch engines.
+   */
+  private armStartTimer() {
+    this.clearStartTimer();
+    if (this.engine !== "native" || this.kind !== "hls" || this.firstFailure || !this.order[this.step + 1]) return;
+    const inner = this.inner;
+    this.startTimer = setTimeout(() => {
+      this.startTimer = null;
+      if (this.destroyed || this.switching || inner !== this.inner || inner.ready()) return;
+      this.onInner("error", { message: STREAM_START_TIMEOUT_MESSAGE });
+    }, this.startTimeoutMs);
+  }
+
+  private clearStartTimer() {
+    if (this.startTimer) clearTimeout(this.startTimer);
+    this.startTimer = null;
+  }
+
   private onInner(e: PlayerEvent, detail?: { message?: string }) {
     if (this.switching) return;
     if (e === "error") {
@@ -133,8 +172,9 @@ export class FallbackPlayer implements PlayerAdapter {
         void this.refineAndRetry(this.source, message);
         return;
       }
+      this.clearStartTimer();
       const next = this.order[this.step + 1];
-      if (!this.firstFailure && next && shouldFallBack(this.engine, message)) {
+      if (!this.firstFailure && next && shouldFallBack(this.engine, message, this.kind)) {
         this.firstFailure = { engine: this.engine, message };
         this.session?.failed(classifyFailure(this.engine, message, this.reason), message);
         this.switching = true;
@@ -145,12 +185,13 @@ export class FallbackPlayer implements PlayerAdapter {
       }
       const final = this.firstFailure ? finalMessage(this.firstFailure, message) : message;
       const blamed = final === message ? this.engine : (this.firstFailure?.engine ?? this.engine);
-      this.session?.failed(classifyFailure(blamed, final, this.reason), final);
+      this.session?.failed(classifyFailure(blamed, final, this.reason), final, true);
       this.events.emit("error", { message: final });
       return;
     }
     if (e === "playing") this.session?.playing();
     if (e === "ready") {
+      this.clearStartTimer();
       this.session?.ready(this.inner.mediaInfo?.());
       if (this.volume !== null) this.inner.setVolume(this.volume);
       if (this.muted !== null) this.inner.setMuted(this.muted);
@@ -179,6 +220,7 @@ export class FallbackPlayer implements PlayerAdapter {
     this.switching = false;
     this.use(engine);
     this.inner.load(source);
+    this.armStartTimer();
   }
 
   /**
@@ -211,6 +253,7 @@ export class FallbackPlayer implements PlayerAdapter {
     this.refined = false;
     this.reason = null;
     this.inner.load(source);
+    this.armStartTimer();
   }
   play() {
     this.wantPlay = true;
@@ -272,6 +315,7 @@ export class FallbackPlayer implements PlayerAdapter {
   }
   destroy() {
     this.destroyed = true;
+    this.clearStartTimer();
     this.off?.();
     this.events.clear();
     this.inner.destroy();
