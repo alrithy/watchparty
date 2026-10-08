@@ -1,7 +1,7 @@
 import type { MoviPlayer, PlayerState } from "movi-player/player";
 import type { MediaSource, SourceKind } from "@/lib/room/types";
 import { INCOMPATIBLE_MESSAGE } from "@/lib/media/source";
-import { Emitter, notAllowed, type MediaInfoSummary, type PlayerAdapter, type PlayerListener } from "@/lib/player/types";
+import { Emitter, notAllowed, type MediaInfoSummary, type PictureFit, type PlayerAdapter, type PlayerListener } from "@/lib/player/types";
 import type { PlayerOptions } from "@/lib/player/media-element";
 
 /**
@@ -90,6 +90,7 @@ export class MoviPlayerAdapter implements PlayerAdapter {
   private muted = false;
   private offs: (() => void)[] = [];
   private resize: ResizeObserver | null = null;
+  private fit: PictureFit = "contain";
   private uiTimer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
 
@@ -156,6 +157,7 @@ export class MoviPlayerAdapter implements PlayerAdapter {
     player.setVolume(this.volume);
     player.setMuted(this.muted);
     if (this.currentRate !== 1) player.setPlaybackRate(this.currentRate);
+    if (this.fit !== "contain") player.setFitMode(this.fit);
     this.isReady = true;
     if (this.opts.controls) this.wrapper.appendChild(this.controls());
     this.events.emit("ready");
@@ -332,6 +334,16 @@ export class MoviPlayerAdapter implements PlayerAdapter {
   setMuted(muted: boolean) {
     this.muted = muted;
     if (this.isReady) this.player?.setMuted(muted);
+  }
+  videoSize() {
+    const track = this.isReady ? this.player?.getVideoTracks()[0] : undefined;
+    if (!track?.width || !track.height) return null;
+    const turned = Math.abs(this.player?.getVideoRotation() ?? track.rotation ?? 0) % 180 === 90;
+    return turned ? { width: track.height, height: track.width } : { width: track.width, height: track.height };
+  }
+  setFit(fit: PictureFit) {
+    this.fit = fit;
+    if (this.isReady) this.player?.setFitMode(fit);
   }
   on(listener: PlayerListener) {
     return this.events.on(listener);

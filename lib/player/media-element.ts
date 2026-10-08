@@ -1,6 +1,6 @@
 import type { MediaSource, SourceKind } from "@/lib/room/types";
 import { DRM_MESSAGE, INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE, describeMediaError } from "@/lib/media/source";
-import { Emitter, notAllowed, type MediaInfoSummary, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
+import { Emitter, notAllowed, type MediaInfoSummary, type PictureFit, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
 import { PositionClock } from "@/lib/player/script";
 
 export type PlayerOptions = { controls: boolean };
@@ -72,6 +72,7 @@ export class MediaElementAdapter implements PlayerAdapter {
   private readonly events = new Emitter();
   private readonly wrapper: HTMLDivElement;
   private el: MediaLike | null = null;
+  private fit: PictureFit = "contain";
   private readonly iframe: boolean;
   private failure: string | null = null;
   private isReady = false;
@@ -120,6 +121,7 @@ export class MediaElementAdapter implements PlayerAdapter {
     el.controls = this.opts.controls;
     el.playsInline = true;
     el.preload = "auto";
+    applyFit(el, this.fit);
     this.el = el;
     this.wrapper.appendChild(el);
     // Guests watch, they don't drive: keep clicks off the provider's own controls.
@@ -364,6 +366,18 @@ export class MediaElementAdapter implements PlayerAdapter {
   setMuted(muted: boolean) {
     if (this.el) this.el.muted = muted;
   }
+  videoSize() {
+    if (this.iframe || !this.el) return null;
+    // <hls-video>/<dash-video> keep the real <video> in their shadow root.
+    const v = (this.el as MediaLike & { nativeEl?: MediaLike }).nativeEl ?? this.el;
+    const width = v.videoWidth ?? 0;
+    const height = v.videoHeight ?? 0;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  setFit(fit: PictureFit) {
+    this.fit = fit;
+    if (this.el && !this.iframe) applyFit(this.el, fit);
+  }
   on(listener: PlayerListener) {
     return this.events.on(listener);
   }
@@ -389,4 +403,10 @@ export function clickShield(): HTMLDivElement {
   shield.className = "absolute inset-0";
   shield.dataset.testid = "click-shield";
   return shield;
+}
+
+/** object-fit for <video>; the media-element web components read it from a CSS variable. */
+function applyFit(el: HTMLElement, fit: PictureFit) {
+  el.style.objectFit = fit;
+  el.style.setProperty("--media-object-fit", fit);
 }

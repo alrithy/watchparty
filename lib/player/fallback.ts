@@ -1,6 +1,6 @@
 import type { MediaSource, SourceKind } from "@/lib/room/types";
 import { INCOMPATIBLE_MESSAGE, STREAM_START_TIMEOUT_MESSAGE } from "@/lib/media/source";
-import { Emitter, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
+import { Emitter, type PictureFit, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
 import { MediaElementAdapter, type PlayerOptions } from "@/lib/player/media-element";
 import { MOVI_INCOMPATIBLE_MESSAGE, MoviPlayerAdapter, RANGE_BLOCKED_MESSAGE } from "@/lib/player/movi";
 import { refineStreamUrl, type Refinement } from "@/lib/media/refine";
@@ -83,6 +83,7 @@ export class FallbackPlayer implements PlayerAdapter {
   private wantPlay = false;
   private volume: number | null = null;
   private muted: boolean | null = null;
+  private fit: PictureFit = "contain";
   private resume: { at: number; playing: boolean } | null = null;
   /** Set between a failure and the switch, so the failing adapter's last events are dropped. */
   private switching = false;
@@ -195,6 +196,7 @@ export class FallbackPlayer implements PlayerAdapter {
       this.session?.ready(this.inner.mediaInfo?.());
       if (this.volume !== null) this.inner.setVolume(this.volume);
       if (this.muted !== null) this.inner.setMuted(this.muted);
+      if (this.fit !== "contain") this.inner.setFit?.(this.fit);
       const r = this.resume;
       this.resume = null;
       this.events.emit(e, detail);
@@ -309,6 +311,13 @@ export class FallbackPlayer implements PlayerAdapter {
   setMuted(muted: boolean) {
     this.muted = muted;
     this.inner.setMuted(muted);
+  }
+  videoSize() {
+    return this.inner.videoSize?.() ?? null;
+  }
+  setFit(fit: PictureFit) {
+    this.fit = fit;
+    this.inner.setFit?.(fit);
   }
   on(listener: PlayerListener) {
     return this.events.on(listener);

@@ -49,9 +49,15 @@ export interface PlayerAdapter {
   /** Local listening preferences; never synced. */
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
+  /** Displayed picture size, once known; for sizing fullscreen to the picture (optional). */
+  videoSize?(): { width: number; height: number } | null;
+  /** Whole picture with bars ("contain", the default) or cropped to fill the box ("cover"). Local only (optional). */
+  setFit?(fit: PictureFit): void;
   on(listener: PlayerListener): () => void;
   destroy(): void;
 }
+
+export type PictureFit = "contain" | "cover";
 
 export type MediaInfoSummary = {
   /** Picture size; absent while unknown (e.g. before the first frame of an MSE stream). */
