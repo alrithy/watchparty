@@ -9,7 +9,8 @@ body {
 
 /*
  * iPhone fullscreen (the app's own, so subtitles stay visible): the player box covers the
- * viewport inside the safe area, and the 16:9 picture is as large as fits either way round.
+ * viewport inside the safe area. The frame uses the real track ratio, so cinema-wide
+ * media does not get trapped in a 16:9 box with black bars on all four sides.
  */
 .immersive-screen {
   height: 100dvh;
@@ -18,7 +19,15 @@ body {
   overscroll-behavior: contain;
 }
 .immersive-screen .immersive-frame {
-  width: min(100cqw, 100cqh * 16 / 9);
+  width: min(100cqw, calc(100cqh * var(--wp-media-width, 16) / var(--wp-media-height, 9)));
+}
+/* Both native video and Movi wrap their output in aspect-video (16:9) by default.
+ * Match that wrapper to the same picture rectangle the subtitles are positioned in. */
+.immersive-screen [data-testid="stage"] > div {
+  aspect-ratio: var(--wp-media-width, 16) / var(--wp-media-height, 9);
+}
+.immersive-screen [data-testid="video"] {
+  object-fit: contain;
 }
 .immersive-exit {
   top: calc(env(safe-area-inset-top) + 0.75rem);
