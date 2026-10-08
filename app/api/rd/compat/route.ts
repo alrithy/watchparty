@@ -1,7 +1,6 @@
 import { isCrossSite } from "@/lib/http/same-origin";
 import { getRdAppleVariants, listRdDownloads, RdCompatError, validRdId } from "@/lib/realdebrid/compat";
 
-export const runtime = "nodejs";
 const headers = { "Cache-Control": "private, no-store, max-age=0", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" };
 const bad = (code: string, message: string, status: number) =>
   Response.json({ error: { code, message } }, { status, headers });
