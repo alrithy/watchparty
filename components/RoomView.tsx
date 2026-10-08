@@ -7,6 +7,7 @@ import type { PlayerAdapter } from "@/lib/player/types";
 import { useWatchParty } from "@/components/useWatchParty";
 import { prepareSource } from "@/lib/media/prepare";
 import { SubtitleControls, SubtitleOverlay } from "@/components/Subtitles";
+import { useFullscreen } from "@/components/useFullscreen";
 
 type Props = { roomId: string; clientId: string; role: Role };
 
@@ -18,6 +19,8 @@ export default function RoomView({ roomId, clientId, role }: Props) {
   const room = useWatchParty({ roomId, clientId, role, stageRef });
   const { media, mediaError } = room;
   const [showSubtitles, setShowSubtitles] = useState(true);
+  const exitFullscreenRef = useRef<HTMLButtonElement>(null);
+  const fullscreen = useFullscreen(screenRef, exitFullscreenRef);
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-6">
@@ -43,12 +46,23 @@ export default function RoomView({ roomId, clientId, role }: Props) {
       <div
         ref={screenRef}
         data-testid="screen"
-        className="relative overflow-hidden rounded-lg bg-black [&:fullscreen]:flex [&:fullscreen]:items-center [&:fullscreen]:rounded-none"
+        data-immersive={fullscreen.immersive || undefined}
+        role={fullscreen.immersive ? "dialog" : undefined}
+        aria-modal={fullscreen.immersive || undefined}
+        aria-label={fullscreen.immersive ? "Fullscreen player" : undefined}
+        className={
+          fullscreen.immersive
+            ? "immersive-screen fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black"
+            : "relative overflow-hidden rounded-lg bg-black [&:fullscreen]:flex [&:fullscreen]:items-center [&:fullscreen]:rounded-none"
+        }
       >
-        {/* The player adapter renders its <video> or provider iframe in here. */}
-        <div ref={stageRef} data-testid="stage" data-kind={media?.kind ?? ""} className="w-full" />
-        <SubtitleOverlay track={room.subtitles} playerRef={room.playerRef} visible={showSubtitles} />
-        {!media && <div className="aspect-video w-full" />}
+        {/* The subtitle overlay sits on the picture itself, so it stays on the video in any fullscreen. */}
+        <div data-testid="frame" className="immersive-frame relative w-full">
+          {/* The player adapter renders its <video> or provider iframe in here. */}
+          <div ref={stageRef} data-testid="stage" data-kind={media?.kind ?? ""} className="w-full" />
+          <SubtitleOverlay track={room.subtitles} playerRef={room.playerRef} visible={showSubtitles} />
+          {!media && <div className="aspect-video w-full" />}
+        </div>
         {!media && (
           <Overlay>{isHost ? "Paste a link below to start." : "Waiting for the host to pick something to watch…"}</Overlay>
         )}
@@ -68,9 +82,20 @@ export default function RoomView({ roomId, clientId, role }: Props) {
             </button>
           </Overlay>
         )}
+        {fullscreen.immersive && (
+          <button
+            ref={exitFullscreenRef}
+            data-testid="exit-fullscreen"
+            onClick={fullscreen.exit}
+            aria-label="Exit fullscreen"
+            className="immersive-exit absolute z-20 flex h-11 min-w-11 items-center justify-center rounded-full bg-black/60 px-3 text-sm text-zinc-100 ring-1 ring-white/30 focus-visible:outline-2 focus-visible:outline-white"
+          >
+            <span aria-hidden="true">✕</span>
+          </button>
+        )}
       </div>
 
-      <PlayerBar isHost={isHost} playerRef={room.playerRef} screenRef={screenRef} />
+      <PlayerBar isHost={isHost} playerRef={room.playerRef} fullscreen={fullscreen.active} onFullscreen={fullscreen.toggle} />
 
       <Panel title="Watch">
         {isHost && <SourceForm onLoad={room.loadMedia} />}
@@ -178,27 +203,17 @@ function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["load
 function PlayerBar({
   isHost,
   playerRef,
-  screenRef,
+  fullscreen,
+  onFullscreen,
 }: {
   isHost: boolean;
   playerRef: React.RefObject<PlayerAdapter | null>;
-  screenRef: React.RefObject<HTMLDivElement | null>;
+  fullscreen: boolean;
+  onFullscreen: () => void;
 }) {
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const btn = "rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400";
-  const fullscreen = () => {
-    const el = screenRef.current as (HTMLDivElement & { webkitRequestFullscreen?: () => void }) | null;
-    if (!el) return;
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else if (el.requestFullscreen) void el.requestFullscreen().catch(() => {});
-    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-    else {
-      // iPhone Safari only lets the <video> itself go fullscreen (our subtitle layer can't follow).
-      const v = el.querySelector("video") as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
-      v?.webkitEnterFullscreen?.();
-    }
-  };
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
       {!isHost && (
@@ -227,8 +242,8 @@ function PlayerBar({
           />
         </>
       )}
-      <button className={btn} onClick={fullscreen} data-testid="fullscreen">
-        Fullscreen
+      <button className={btn} onClick={onFullscreen} data-testid="fullscreen">
+        {fullscreen ? "Exit fullscreen" : "Fullscreen"}
       </button>
       {!isHost && <span className="text-zinc-500">The host controls playback.</span>}
     </div>

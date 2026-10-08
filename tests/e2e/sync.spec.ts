@@ -747,6 +747,114 @@ test("MKV: subtitles overlay and delay work on Movi", async ({ browser, context 
   await expect(guest.getByTestId("subtitle-text")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
 });
 
+/**
+ * iPhone Safari has no element fullscreen: only `video.webkitEnterFullscreen()`, Apple's own
+ * player, which drops our subtitle overlay. This makes Chromium look like that and counts any
+ * call to it.
+ */
+async function iPhoneContext(browser: Browser) {
+  const ctx = await browser.newContext({
+    storageState: test.info().project.use.storageState,
+    viewport: { width: 844, height: 390 },
+    hasTouch: true,
+  });
+  await prepareContext(ctx);
+  await ctx.addInitScript(() => {
+    Object.defineProperty(Document.prototype, "fullscreenEnabled", { get: () => false });
+    Object.defineProperty(Document.prototype, "webkitFullscreenEnabled", { get: () => false });
+    const w = window as unknown as { nativeVideoFullscreen: number };
+    w.nativeVideoFullscreen = 0;
+    Object.defineProperty(HTMLVideoElement.prototype, "webkitEnterFullscreen", {
+      value: () => void w.nativeVideoFullscreen++,
+    });
+  });
+  return ctx;
+}
+
+const box = async (page: Page, testId: string) => (await page.getByTestId(testId).boundingBox())!;
+
+for (const clip of [CLIP, "/__test__/clip.mkv"]) {
+  test(`iPhone fullscreen keeps Arabic subtitles on the picture (${clip.endsWith(".mkv") ? "Movi" : "video"})`, async ({ browser }) => {
+    const ctx = await iPhoneContext(browser);
+    const host = await ctx.newPage();
+    await hostRoom(host, clip);
+    await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+    await act(host, { seek: 2 });
+    await act(host, "play");
+    await host.evaluate(() => window.scrollTo(0, 150));
+    const scrolled = await host.evaluate(() => window.scrollY);
+    expect(scrolled).toBeGreaterThan(0);
+
+    // Clicked in place: Playwright's own click would scroll the page first.
+    await host.getByTestId("fullscreen").evaluate((b: HTMLButtonElement) => b.click());
+    const screen = host.getByTestId("screen");
+    await expect(screen).toHaveAttribute("data-immersive", "true");
+    await expect(screen).toHaveAttribute("role", "dialog");
+    await expect(host.getByTestId("exit-fullscreen")).toBeFocused();
+    expect(await host.evaluate(() => (window as unknown as { nativeVideoFullscreen: number }).nativeVideoFullscreen)).toBe(0);
+    expect(await host.evaluate(() => document.fullscreenElement)).toBeNull();
+
+    // The player covers the viewport and the 16:9 picture fits inside it, with the subtitles on it.
+    const check = async (w: number, h: number) => {
+      expect(await box(host, "screen")).toEqual({ x: 0, y: 0, width: w, height: h });
+      const frame = await box(host, "frame");
+      expect(frame.width).toBeCloseTo(Math.min(w, (h * 16) / 9), 0);
+      expect(frame.height).toBeLessThanOrEqual(h + 0.5);
+      const line = host.getByTestId("subtitle-text").locator("p");
+      await expect(line).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+      await expect(line).toBeInViewport({ ratio: 1 });
+      expect(await line.evaluate((p) => getComputedStyle(p).direction)).toBe("rtl");
+      const text = await box(host, "subtitle-text");
+      expect(text.y + text.height).toBeLessThanOrEqual(frame.y + frame.height + 0.5);
+      expect(text.y).toBeGreaterThanOrEqual(frame.y);
+    };
+    await check(844, 390);
+    // Turning the phone upright keeps everything on screen.
+    await host.setViewportSize({ width: 390, height: 844 });
+    await check(390, 844);
+
+    // The page underneath doesn't scroll, and playback keeps going inline.
+    expect(await host.evaluate(() => getComputedStyle(document.body).position)).toBe("fixed");
+    await host.mouse.wheel(0, 400);
+    const t0 = (await info(host)).t;
+    await expect.poll(async () => (await info(host)).t).toBeGreaterThan(t0 + 0.5);
+    expect((await info(host)).paused).toBe(false);
+    if (clip === CLIP) expect(await video(host).evaluate((v: HTMLVideoElement) => v.playsInline)).toBe(true);
+
+    // Escape and the exit button both leave it, restoring the page and its scroll position.
+    await host.setViewportSize({ width: 844, height: 390 });
+    await host.keyboard.press("Escape");
+    await expect(screen).not.toHaveAttribute("data-immersive");
+    expect(await host.evaluate(() => getComputedStyle(document.body).position)).toBe("static");
+    expect(await host.evaluate(() => window.scrollY)).toBe(scrolled);
+    await host.getByTestId("fullscreen").click();
+    await expect(host.getByTestId("fullscreen")).toHaveText("Exit fullscreen");
+    await host.getByTestId("exit-fullscreen").click();
+    await expect(screen).not.toHaveAttribute("data-immersive");
+    await expect(host.getByTestId("exit-fullscreen")).toHaveCount(0);
+    await expect(host.getByTestId("fullscreen")).toHaveText("Fullscreen");
+    expect(await host.evaluate(() => (window as unknown as { nativeVideoFullscreen: number }).nativeVideoFullscreen)).toBe(0);
+    await ctx.close();
+  });
+}
+
+test("desktop fullscreen still uses the Fullscreen API on the player box", async ({ context }) => {
+  const host = await context.newPage();
+  await hostRoom(host);
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+  await act(host, { seek: 2 });
+
+  await host.getByTestId("fullscreen").click();
+  await expect.poll(() => host.evaluate(() => document.fullscreenElement?.getAttribute("data-testid"))).toBe("screen");
+  await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
+  await expect(host.getByTestId("subtitle-text").locator("p")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+
+  // The page's own button sits under the fullscreen player; leave it the way Escape does.
+  await host.evaluate(() => document.exitFullscreen());
+  await expect.poll(() => host.evaluate(() => document.fullscreenElement)).toBeNull();
+  await expect(host.getByTestId("fullscreen")).toHaveText("Fullscreen");
+});
+
 test("Movi failures say why: blocked byte-range access, or a missing file", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("create-room").click();
