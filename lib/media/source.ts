@@ -2,6 +2,8 @@ import type { MediaSource, SourceKind } from "@/lib/room/types";
 
 export const INCOMPATIBLE_MESSAGE = "This source is not browser compatible.";
 export const NOT_DIRECT_MESSAGE = "This source can't be played directly.";
+export const STREAM_START_TIMEOUT_MESSAGE = "The stream didn't start loading.";
+export const DRM_MESSAGE = "This video is DRM-protected, so Watch Party can't play it.";
 
 const FILE_EXT = /\.(mp4|m4v|mov|webm|ogv|ogg|oga|mkv|avi|ts|m2ts|mts|wmv|flv|mp3|m4a|aac|flac|wav|opus)$/i;
 /** Containers (and the codecs usually inside them) that <video> can't be trusted with: Movi plays these first. */

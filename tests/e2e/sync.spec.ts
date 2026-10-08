@@ -747,6 +747,349 @@ test("MKV: subtitles overlay and delay work on Movi", async ({ browser, context 
   await expect(guest.getByTestId("subtitle-text")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
 });
 
+/**
+ * iPhone Safari has no element fullscreen: only `video.webkitEnterFullscreen()`, Apple's own
+ * player, which drops our subtitle overlay. This makes Chromium look like that: the calls are
+ * counted and fire the `webkitbeginfullscreen` / `webkitendfullscreen` events iPhone fires.
+ */
+async function iPhoneContext(browser: Browser) {
+  const ctx = await browser.newContext({
+    storageState: test.info().project.use.storageState,
+    viewport: { width: 844, height: 390 },
+    hasTouch: true,
+  });
+  await prepareContext(ctx);
+  await ctx.addInitScript(() => {
+    Object.defineProperty(Document.prototype, "fullscreenEnabled", { get: () => false });
+    Object.defineProperty(Document.prototype, "webkitFullscreenEnabled", { get: () => false });
+    // iOS keeps media volume at 1; the side buttons own it.
+    const volume = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "volume")!;
+    Object.defineProperty(HTMLMediaElement.prototype, "volume", { get: volume.get, set() {} });
+    const w = window as unknown as { nativeVideoFullscreen: number; nativeVideoExit: number };
+    w.nativeVideoFullscreen = 0;
+    w.nativeVideoExit = 0;
+    Object.defineProperty(HTMLVideoElement.prototype, "webkitEnterFullscreen", {
+      value(this: HTMLVideoElement) {
+        w.nativeVideoFullscreen++;
+        this.dispatchEvent(new Event("webkitbeginfullscreen"));
+      },
+    });
+    Object.defineProperty(HTMLVideoElement.prototype, "webkitExitFullscreen", {
+      value(this: HTMLVideoElement) {
+        w.nativeVideoExit++;
+        this.dispatchEvent(new Event("webkitendfullscreen"));
+      },
+    });
+  });
+  return ctx;
+}
+
+const counter = (page: Page, name: "nativeVideoFullscreen" | "nativeVideoExit") =>
+  page.evaluate((n) => (window as unknown as Record<string, number>)[n], name);
+const box = async (page: Page, testId: string) => (await page.getByTestId(testId).boundingBox())!;
+/** Taps the page's Fullscreen button in place (Playwright's own click would scroll the page first). */
+const tapFullscreen = (page: Page) => page.getByTestId("fullscreen").evaluate((b: HTMLButtonElement) => b.click());
+
+for (const clip of [CLIP, "/__test__/clip.mkv"]) {
+  test(`iPhone fullscreen keeps Arabic subtitles on the picture (${clip.endsWith(".mkv") ? "Movi" : "video"})`, async ({ browser }) => {
+    const ctx = await iPhoneContext(browser);
+    const host = await ctx.newPage();
+    const roomUrl = await hostRoom(host, clip);
+    const guest = await (process.env.E2E_SUPABASE ? await iPhoneContext(browser) : ctx).newPage();
+    await guest.goto(roomUrl);
+    await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+    await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+    await act(host, { seek: 2 });
+    await act(host, "play");
+    await host.evaluate(() => window.scrollTo(0, 150));
+    const scrolled = await host.evaluate(() => window.scrollY);
+    expect(scrolled).toBeGreaterThan(0);
+
+    await tapFullscreen(host);
+    const screen = host.getByTestId("screen");
+    await expect(screen).toHaveAttribute("data-immersive", "true");
+    await expect(screen).toHaveAttribute("role", "dialog");
+    await expect(host.getByTestId("exit-fullscreen")).toBeFocused();
+    expect(await counter(host, "nativeVideoFullscreen")).toBe(0);
+    expect(await host.evaluate(() => document.fullscreenElement)).toBeNull();
+    // The <video>'s own controls (with Apple's fullscreen button) are off; ours are on, Movi's bar gives way.
+    if (clip === CLIP) expect(await video(host).evaluate((v: HTMLVideoElement) => v.controls)).toBe(false);
+    else await expect(host.getByTestId("movi-controls")).toBeHidden();
+    const controls = host.getByTestId("immersive-controls");
+    await expect(controls).toBeVisible();
+    await expect(controls.getByRole("button", { name: "Pause" })).toBeVisible();
+    await expect(controls.getByRole("slider", { name: "Seek" })).toBeVisible();
+    await expect(controls.getByRole("button", { name: "Mute" })).toBeVisible();
+    // No inert volume slider on iPhone: Mute here, level on the side buttons.
+    await expect(controls.getByRole("slider", { name: "Volume" })).toHaveCount(0);
+
+    // The player covers the viewport and the 16:9 picture fits inside it, with the subtitles on it.
+    const check = async (w: number, h: number) => {
+      expect(await box(host, "screen")).toEqual({ x: 0, y: 0, width: w, height: h });
+      const frame = await box(host, "frame");
+      expect(frame.width).toBeCloseTo(Math.min(w, (h * 16) / 9), 0);
+      expect(frame.height).toBeLessThanOrEqual(h + 0.5);
+      const line = host.getByTestId("subtitle-text").locator("p");
+      await expect(line).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+      await expect(line).toBeInViewport({ ratio: 1 });
+      expect(await line.evaluate((p) => getComputedStyle(p).direction)).toBe("rtl");
+      const text = await box(host, "subtitle-text");
+      expect(text.y + text.height).toBeLessThanOrEqual(frame.y + frame.height + 0.5);
+      expect(text.y).toBeGreaterThanOrEqual(frame.y);
+    };
+    await check(844, 390);
+    // Turning the phone upright keeps everything on screen.
+    await host.setViewportSize({ width: 390, height: 844 });
+    await check(390, 844);
+    await host.setViewportSize({ width: 844, height: 390 });
+
+    // The page underneath doesn't scroll, and playback keeps going inline.
+    expect(await host.evaluate(() => getComputedStyle(document.body).position)).toBe("fixed");
+    await host.mouse.wheel(0, 400);
+    const t0 = (await info(host)).t;
+    await expect.poll(async () => (await info(host)).t).toBeGreaterThan(t0 + 0.5);
+    if (clip === CLIP) expect(await video(host).evaluate((v: HTMLVideoElement) => v.playsInline)).toBe(true);
+
+    // The controls fade while playing and come back on a tap.
+    await expect(controls).toHaveCSS("opacity", "0", { timeout: 6000 });
+    await host.getByTestId("frame").tap();
+    await expect(controls).toHaveCSS("opacity", "1");
+
+    // Host controls drive the room: pause, seek past the first cue, play.
+    await controls.getByRole("button", { name: "Pause" }).tap();
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(true);
+    const seek = controls.getByRole("slider", { name: "Seek" });
+    await seek.fill("12");
+    await seek.blur();
+    await expect.poll(async () => (await info(guest)).t, { timeout: 10_000 }).toBeGreaterThan(11.5);
+    await expect(host.getByTestId("subtitle-text")).toHaveText("Second line", { timeout: 10_000 });
+    await controls.getByRole("button", { name: "Play" }).tap();
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+    // Mute is local only.
+    await controls.getByRole("button", { name: "Mute" }).tap();
+    await expect(controls.getByRole("button", { name: "Unmute" })).toBeVisible();
+    await expect(host.getByTestId("fullscreen")).toHaveText("Exit fullscreen");
+
+    // Escape and the exit button both leave it, restoring the page, its scroll position and the controls.
+    await host.keyboard.press("Escape");
+    await expect(screen).not.toHaveAttribute("data-immersive");
+    await expect(host.getByTestId("immersive-controls")).toHaveCount(0);
+    expect(await host.evaluate(() => getComputedStyle(document.body).position)).toBe("static");
+    expect(await host.evaluate(() => window.scrollY)).toBe(scrolled);
+    if (clip === CLIP) expect(await video(host).evaluate((v: HTMLVideoElement) => v.controls)).toBe(true);
+    else await expect(host.getByTestId("movi-controls")).toBeVisible();
+    await tapFullscreen(host);
+    await host.getByTestId("exit-fullscreen").click();
+    await expect(screen).not.toHaveAttribute("data-immersive");
+    await expect(host.getByTestId("exit-fullscreen")).toHaveCount(0);
+    await expect(host.getByTestId("fullscreen")).toHaveText("Fullscreen");
+    expect(await counter(host, "nativeVideoFullscreen")).toBe(0);
+
+    // A guest's fullscreen has volume and exit, but no transport: the host controls playback.
+    await tapFullscreen(guest);
+    const guestControls = guest.getByTestId("immersive-controls");
+    await expect(guestControls.getByRole("button", { name: "Mute" })).toBeVisible();
+    await expect(guestControls.getByRole("slider", { name: "Seek" })).toHaveCount(0);
+    await expect(guestControls.getByRole("button", { name: /Play|Pause/ })).toHaveCount(0);
+    await expect(guest.getByTestId("subtitle-text")).toHaveCount(1, { timeout: 10_000 });
+    await guest.getByTestId("exit-fullscreen").click();
+    await ctx.close();
+  });
+}
+
+// A 2.40:1 film used to sit in a 16:9 box: black bars on all four sides at once.
+for (const clip of ["/__test__/wide.mp4", "/__test__/wide.mkv"]) {
+  test(`iPhone fullscreen sizes to a 2.40:1 picture with no extra bars, Fit and Fill (${clip.endsWith(".mkv") ? "Movi" : "video"})`, async ({ browser }) => {
+    const ctx = await iPhoneContext(browser);
+    const host = await ctx.newPage();
+    await hostRoom(host, clip);
+    if (clip.endsWith(".mkv")) await expect(host.locator('[data-provider="movi"]')).toHaveCount(1);
+    await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+    await act(host, { seek: 2 });
+    await tapFullscreen(host);
+    await expect(host.getByTestId("screen")).toHaveAttribute("data-immersive", "true");
+
+    const ratio = 480 / 200;
+    // The picture box has the picture's own shape and is as large as fits: bars on one axis at most.
+    const check = async (w: number, h: number) => {
+      await expect.poll(async () => {
+        const f = await box(host, "frame");
+        return Math.round(f.width / f.height * 100) / 100;
+      }).toBeCloseTo(ratio, 1);
+      const f = await box(host, "frame");
+      expect(f.width).toBeCloseTo(Math.min(w, h * ratio), 0);
+      expect(f.height).toBeCloseTo(Math.min(h, w / ratio), 0);
+      // Centred, and the player inside fills it (no 16:9 box inside the picture box).
+      expect(f.x).toBeCloseTo((w - f.width) / 2, 0);
+      expect(f.y).toBeCloseTo((h - f.height) / 2, 0);
+      const player = (await host.getByTestId("stage").locator(":scope > *").first().boundingBox())!;
+      expect(player).toEqual(f);
+      // Subtitles sit on the picture, not on a black strip.
+      const line = host.getByTestId("subtitle-text").locator("p");
+      await expect(line).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+      const text = await box(host, "subtitle-text");
+      expect(text.y).toBeGreaterThanOrEqual(f.y);
+      expect(text.y + text.height).toBeLessThanOrEqual(f.y + f.height + 0.5);
+    };
+    await check(844, 390);
+    await host.setViewportSize({ width: 390, height: 844 });
+    await check(390, 844);
+    await host.setViewportSize({ width: 844, height: 390 });
+    await check(844, 390);
+
+    // Fill crops to cover the screen; Fit (the default) brings the whole picture back.
+    const controls = host.getByTestId("immersive-controls");
+    await host.getByTestId("frame").tap();
+    await controls.getByRole("button", { name: "Fill screen" }).tap();
+    await expect(host.getByTestId("screen")).toHaveAttribute("data-fit", "cover");
+    await expect.poll(() => box(host, "frame")).toEqual({ x: 0, y: 0, width: 844, height: 390 });
+    if (clip.endsWith(".mp4")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("cover");
+    await expect(host.getByTestId("subtitle-text").locator("p")).toBeInViewport({ ratio: 1 });
+    await controls.getByRole("button", { name: "Fit whole picture" }).tap();
+    await check(844, 390);
+    if (clip.endsWith(".mp4")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("contain");
+
+    // Leaving fullscreen puts the normal page player back as it was.
+    await host.getByTestId("exit-fullscreen").click();
+    await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
+    const page = await box(host, "frame");
+    expect(page.width / page.height).toBeCloseTo(16 / 9, 1);
+    await ctx.close();
+  });
+}
+
+test("iPhone: the video's own fullscreen button lands in the app's fullscreen instead", async ({ browser }) => {
+  const ctx = await iPhoneContext(browser);
+  const host = await ctx.newPage();
+  await hostRoom(host);
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+  await act(host, { seek: 2 });
+
+  // What tapping the fullscreen button in the native controls does on iPhone.
+  await video(host).evaluate((v: HTMLVideoElement & { webkitEnterFullscreen(): void }) => v.webkitEnterFullscreen());
+  await expect(host.getByTestId("screen")).toHaveAttribute("data-immersive", "true");
+  expect(await counter(host, "nativeVideoExit")).toBe(1);
+  await expect(host.getByTestId("subtitle-text").locator("p")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+  await ctx.close();
+});
+
+test("iPhone, nativesubs experiment: Apple's player gets the subtitles as a native track, with the delay", async ({ browser }) => {
+  const ctx = await iPhoneContext(browser);
+  const host = await ctx.newPage();
+  const roomUrl = await hostRoom(host);
+  await host.goto(`${roomUrl}?nativesubs=1`);
+  await expect.poll(async () => (await info(host)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+  const track = () =>
+    video(host).evaluate((v: HTMLVideoElement) => {
+      const t = v.textTracks[0];
+      if (!t) return null;
+      const mode = t.mode;
+      if (mode === "disabled") return { mode, cues: [] };
+      return { mode, cues: Array.from(t.cues ?? []).map((c) => [c.startTime, c.endTime, (c as VTTCue).text]) };
+    });
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+  await host.getByTestId("subtitle-later").click();
+  await act(host, { seek: 2 });
+  await expect(host.getByTestId("subtitle-text")).toHaveCount(1, { timeout: 10_000 });
+  // Installed before Apple's player opens (Safari may not draw a track added later), but hidden inline.
+  await expect.poll(async () => (await track())?.mode).toBe("hidden");
+  expect((await track())?.cues).toHaveLength(2);
+
+  await tapFullscreen(host);
+  expect(await counter(host, "nativeVideoFullscreen")).toBe(1);
+  await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
+  // Only one set of subtitles: the overlay steps aside for the native track.
+  await expect(host.getByTestId("subtitle-text")).toHaveCount(0);
+  await expect.poll(track).toEqual({
+    mode: "showing",
+    cues: [
+      [0.5, 10.5, "مرحبا بكم في الحفلة"],
+      [10.5, 20.5, "Second line"],
+    ],
+  });
+  // A new delay is applied to the native track too.
+  await host.getByTestId("subtitle-later").evaluate((b: HTMLButtonElement) => b.click());
+  await expect.poll(async () => (await track())?.cues[0]).toEqual([1, 11, "مرحبا بكم في الحفلة"]);
+
+  // Leaving Apple's player hides the track again and brings the overlay back.
+  await video(host).evaluate((v: HTMLVideoElement & { webkitExitFullscreen(): void }) => v.webkitExitFullscreen());
+  await expect.poll(async () => (await track())?.mode).toBe("hidden");
+  await expect(host.getByTestId("subtitle-text")).toHaveCount(1, { timeout: 10_000 });
+  await ctx.close();
+});
+
+test("iPhone, 30-minute seek on Movi: subtitles, pause/resume and delay hold in fullscreen, and the guest follows", async ({ browser }) => {
+  const ctx = await iPhoneContext(browser);
+  const host = await ctx.newPage();
+  const roomUrl = await hostRoom(host, "/__test__/long.mkv");
+  const guest = await (process.env.E2E_SUPABASE ? await iPhoneContext(browser) : ctx).newPage();
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+  const srt = "1\n00:30:00,000 --> 00:30:10,000\nبعد نصف ساعة\n\n2\n00:30:10,000 --> 00:30:20,000\nالسطر التالي\n";
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "long.srt", mimeType: "application/x-subrip", buffer: Buffer.from(srt) });
+
+  await tapFullscreen(host);
+  await tapFullscreen(guest);
+  const controls = host.getByTestId("immersive-controls");
+  const seek = controls.getByRole("slider", { name: "Seek" });
+  await expect(seek).toBeEnabled({ timeout: 10_000 });
+  await seek.fill("1802");
+  await seek.blur();
+  await controls.getByRole("button", { name: "Play" }).tap();
+  for (const page of [host, guest]) {
+    await expect(page.getByTestId("subtitle-text")).toHaveText("بعد نصف ساعة", { timeout: 15_000 });
+  }
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] }).toBeLessThan(0.4);
+
+  await controls.getByRole("button", { name: "Pause" }).tap();
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 5000 }).toBe(true);
+  await seek.fill("1810.2");
+  await seek.blur();
+  await expect(guest.getByTestId("subtitle-text")).toHaveText("السطر التالي", { timeout: 10_000 });
+  // +0.5 s delay, set from the panel under the player: the earlier line shows again for everyone.
+  await host.getByTestId("subtitle-later").evaluate((b: HTMLButtonElement) => b.click());
+  for (const page of [host, guest]) {
+    await expect(page.getByTestId("subtitle-text")).toHaveText("بعد نصف ساعة", { timeout: 10_000 });
+  }
+  await controls.getByRole("button", { name: "Play" }).tap();
+  await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+  await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] }).toBeLessThan(0.4);
+  await expect(guest.getByTestId("screen")).toHaveAttribute("data-immersive", "true");
+  await ctx.close();
+});
+
+test("desktop fullscreen still uses the Fullscreen API on the player box", async ({ context }) => {
+  const host = await context.newPage();
+  await hostRoom(host);
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+  await act(host, { seek: 2 });
+
+  await host.getByTestId("fullscreen").click();
+  await expect.poll(() => host.evaluate(() => document.fullscreenElement?.getAttribute("data-testid"))).toBe("screen");
+  await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
+  await expect(host.getByTestId("immersive-controls")).toHaveCount(0);
+  expect(await video(host).evaluate((v: HTMLVideoElement) => v.controls)).toBe(true);
+  await expect(host.getByTestId("subtitle-text").locator("p")).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+
+  // The page's own button sits under the fullscreen player; leave it the way Escape does.
+  await host.evaluate(() => document.exitFullscreen());
+  await expect.poll(() => host.evaluate(() => document.fullscreenElement)).toBeNull();
+  await expect(host.getByTestId("fullscreen")).toHaveText("Fullscreen");
+});
+
+test("Watch Party installs as a Home Screen web app", async ({ page }) => {
+  await page.goto("/");
+  const manifest = await page.locator('link[rel="manifest"]').getAttribute("href");
+  const res = await page.request.get(manifest!);
+  expect(res.ok()).toBe(true);
+  expect(await res.json()).toMatchObject({ name: "Watch Party", display: "standalone", start_url: "/" });
+  for (const icon of (await res.json()).icons as { src: string }[]) expect((await page.request.get(icon.src)).ok()).toBe(true);
+  const touch = await page.locator('link[rel="apple-touch-icon"]').getAttribute("href");
+  expect((await page.request.get(touch!)).ok()).toBe(true);
+  await expect(page.locator('meta[name="mobile-web-app-capable"], meta[name="apple-mobile-web-app-capable"]')).toHaveCount(1);
+  await expect(page.locator('meta[name="viewport"]')).toHaveAttribute("content", /viewport-fit=cover/);
+});
+
 test("Movi failures say why: blocked byte-range access, or a missing file", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("create-room").click();
@@ -772,6 +1115,31 @@ test("Movi failures say why: blocked byte-range access, or a missing file", asyn
 
   await paste(page, "/__test__/missing.mkv");
   await expect(page.getByTestId("media-error")).toHaveText("The video link wasn't found. It may have expired.", { timeout: 30_000 });
+});
+
+test("playback details name the engine, why it was picked, and failure codes, without the link", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("create-room").click();
+  await page.waitForURL(/\/room\//);
+  const diag = page.getByTestId("playback-diagnostics");
+  const report = () => page.evaluate(() => JSON.stringify((window as unknown as { __watchparty: { diagnostics(): unknown } }).__watchparty.diagnostics()));
+
+  // Chromium has no WebKit HLS player, so hls.js plays HLS here (Safari would get its own player first).
+  await paste(page, "/__test__/hls/index.m3u8?token=SECRET");
+  await expect(page.getByTestId("diag-engine")).toHaveAttribute("data-engine", "hlsjs", { timeout: 20_000 });
+  await diag.locator("summary").click();
+  await expect(page.getByTestId("diag-reasons")).toContainText("hls.js on Media Source Extensions");
+  await expect(page.getByTestId("diag-attempts")).toContainText(/hls\.js: (ready|playing)/, { timeout: 20_000 });
+
+  await paste(page, "/__test__/clip.mkv?sig=SECRET");
+  await expect(page.getByTestId("diag-engine")).toHaveAttribute("data-engine", "movi", { timeout: 30_000 });
+  await expect(page.getByTestId("diag-attempts")).toContainText(/Movi decoder: (ready|playing).*320×180 matroska/, { timeout: 30_000 });
+
+  await paste(page, "/__test__/missing.mkv?sig=SECRET");
+  await expect(page.getByTestId("diag-engine")).toContainText("EXPIRED_OR_UNAUTHORIZED", { timeout: 30_000 });
+  const text = await report();
+  expect(text).toContain('"extension":"mkv"');
+  expect(text).not.toMatch(/SECRET|missing|__test__/);
 });
 
 /**

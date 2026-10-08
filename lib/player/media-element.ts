@@ -1,6 +1,6 @@
 import type { MediaSource, SourceKind } from "@/lib/room/types";
-import { INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE, describeMediaError } from "@/lib/media/source";
-import { Emitter, notAllowed, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
+import { DRM_MESSAGE, INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE, describeMediaError } from "@/lib/media/source";
+import { Emitter, notAllowed, type MediaInfoSummary, type PictureFit, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
 import { PositionClock } from "@/lib/player/script";
 
 export type PlayerOptions = { controls: boolean };
@@ -72,6 +72,7 @@ export class MediaElementAdapter implements PlayerAdapter {
   private readonly events = new Emitter();
   private readonly wrapper: HTMLDivElement;
   private el: MediaLike | null = null;
+  private fit: PictureFit = "contain";
   private readonly iframe: boolean;
   private failure: string | null = null;
   private isReady = false;
@@ -87,6 +88,8 @@ export class MediaElementAdapter implements PlayerAdapter {
     kind: SourceKind,
     container: HTMLElement,
     private readonly opts: PlayerOptions,
+    /** Plain <video> even for HLS: Safari's own HLS player instead of hls.js. */
+    private readonly native = false,
   ) {
     this.kind = kind;
     this.iframe = kind === "youtube";
@@ -102,7 +105,7 @@ export class MediaElementAdapter implements PlayerAdapter {
 
   load(source: MediaSource) {
     this.events.emit("loading");
-    void define(this.kind).then(
+    void (this.native ? Promise.resolve() : define(this.kind)).then(
       () => {
         if (this.destroyed) return;
         this.attach(source);
@@ -112,12 +115,13 @@ export class MediaElementAdapter implements PlayerAdapter {
   }
 
   private attach(source: MediaSource) {
-    const el = document.createElement(TAGS[this.kind as keyof typeof TAGS]) as MediaLike;
+    const el = document.createElement(this.native ? "video" : TAGS[this.kind as keyof typeof TAGS]) as MediaLike;
     if (!this.iframe) el.dataset.testid = "video";
     el.className = "absolute inset-0 block h-full w-full";
     el.controls = this.opts.controls;
     el.playsInline = true;
     el.preload = "auto";
+    applyFit(el, this.fit);
     this.el = el;
     this.wrapper.appendChild(el);
     // Guests watch, they don't drive: keep clicks off the provider's own controls.
@@ -142,7 +146,7 @@ export class MediaElementAdapter implements PlayerAdapter {
         this.fail(this.iframe ? NOT_DIRECT_MESSAGE : describeMediaError(el.error as MediaError | null)),
       ),
       // Encrypted media needs a DRM license we will never have.
-      this.listen("encrypted", () => this.fail(NOT_DIRECT_MESSAGE)),
+      this.listen("encrypted", () => this.fail(DRM_MESSAGE)),
     );
     if (this.iframe) {
       offs.push(
@@ -210,7 +214,7 @@ export class MediaElementAdapter implements PlayerAdapter {
 
   /** hls.js and dash.js report fatal errors on their own instance, not on the element. */
   private watchLibraryErrors() {
-    if (this.kind !== "hls" && this.kind !== "dash") return;
+    if (this.native || (this.kind !== "hls" && this.kind !== "dash")) return;
     const started = performance.now();
     const check = setInterval(() => {
       const api = this.el?.api;
@@ -220,14 +224,14 @@ export class MediaElementAdapter implements PlayerAdapter {
       if (this.kind === "hls") {
         api.on("hlsError", ((_e: unknown, data: { fatal?: boolean; type?: string }) => {
           if (!data?.fatal) return;
-          if (data.type === "keySystemError") this.fail(NOT_DIRECT_MESSAGE);
+          if (data.type === "keySystemError") this.fail(DRM_MESSAGE);
           else if (data.type === "networkError") this.fail("Network error while loading the stream.");
           else this.fail(INCOMPATIBLE_MESSAGE);
         }) as never);
       } else {
         api.on("error", ((e: { error?: { message?: string } }) => {
           const msg = `${e?.error?.message ?? ""}`.toLowerCase();
-          if (/protection|key ?system|license|drm|encrypted/.test(msg)) this.fail(NOT_DIRECT_MESSAGE);
+          if (/protection|key ?system|license|drm|encrypted/.test(msg)) this.fail(DRM_MESSAGE);
           else if (/download|manifest|network|xhr|fetch/.test(msg)) this.fail("Network error while loading the stream.");
           else this.fail(INCOMPATIBLE_MESSAGE);
         }) as never);
@@ -316,6 +320,29 @@ export class MediaElementAdapter implements PlayerAdapter {
   error() {
     return this.failure;
   }
+  /** What the element knows about the media, for diagnostics. Codecs are only known for hls.js levels. */
+  mediaInfo(): MediaInfoSummary | null {
+    const el = this.el;
+    if (!el || this.iframe || !this.isReady) return null;
+    const audio = (el as unknown as { audioTracks?: { length: number } }).audioTracks;
+    type Level = { videoCodec?: string; audioCodec?: string; width?: number; height?: number };
+    const api = el.api as { levels?: Level[]; currentLevel?: number } | null | undefined;
+    const levels = api?.levels;
+    const level = levels?.[Math.max(0, api?.currentLevel ?? 0)];
+    // The element reports 0×0 until a frame is decoded (hls.js on Managed Media Source does
+    // this at loadedmetadata); fall back to the playing level's size, else leave it unknown.
+    const width = el.videoWidth || level?.width || 0;
+    const height = el.videoHeight || level?.height || 0;
+    return {
+      ...(width && height ? { width, height } : {}),
+      duration: this.duration(),
+      // Safari fills audioTracks for HLS only after the first segments; 0 means "not known yet".
+      ...(audio?.length ? { audioTracks: audio.length } : {}),
+      ...(level?.videoCodec ? { videoCodec: level.videoCodec } : {}),
+      ...(level?.audioCodec ? { audioCodec: level.audioCodec } : {}),
+      ...(levels ? { renditions: levels.length } : {}),
+    };
+  }
   isBuffered(seconds: number) {
     const b = this.el?.buffered;
     if (this.iframe || !b) return false;
@@ -338,6 +365,18 @@ export class MediaElementAdapter implements PlayerAdapter {
   }
   setMuted(muted: boolean) {
     if (this.el) this.el.muted = muted;
+  }
+  videoSize() {
+    if (this.iframe || !this.el) return null;
+    // <hls-video>/<dash-video> keep the real <video> in their shadow root.
+    const v = (this.el as MediaLike & { nativeEl?: MediaLike }).nativeEl ?? this.el;
+    const width = v.videoWidth ?? 0;
+    const height = v.videoHeight ?? 0;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  setFit(fit: PictureFit) {
+    this.fit = fit;
+    if (this.el && !this.iframe) applyFit(this.el, fit);
   }
   on(listener: PlayerListener) {
     return this.events.on(listener);
@@ -364,4 +403,10 @@ export function clickShield(): HTMLDivElement {
   shield.className = "absolute inset-0";
   shield.dataset.testid = "click-shield";
   return shield;
+}
+
+/** object-fit for <video>; the media-element web components read it from a CSS variable. */
+function applyFit(el: HTMLElement, fit: PictureFit) {
+  el.style.objectFit = fit;
+  el.style.setProperty("--media-object-fit", fit);
 }

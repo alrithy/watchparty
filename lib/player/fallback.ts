@@ -1,17 +1,37 @@
 import type { MediaSource, SourceKind } from "@/lib/room/types";
-import { INCOMPATIBLE_MESSAGE } from "@/lib/media/source";
-import { Emitter, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
+import { INCOMPATIBLE_MESSAGE, STREAM_START_TIMEOUT_MESSAGE } from "@/lib/media/source";
+import { Emitter, type PictureFit, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
 import { MediaElementAdapter, type PlayerOptions } from "@/lib/player/media-element";
 import { MOVI_INCOMPATIBLE_MESSAGE, MoviPlayerAdapter, RANGE_BLOCKED_MESSAGE } from "@/lib/player/movi";
 import { refineStreamUrl, type Refinement } from "@/lib/media/refine";
+import { classifyFailure, isTerminal } from "@/lib/media/errors";
+import type { DiagnosticsSession } from "@/lib/media/diagnostics";
+import { safeHost } from "@/lib/media/diagnostics";
+import type { Engine as AnyEngine } from "@/lib/media/route";
 
-export type Engine = "native" | "movi";
+/** Engines this player can switch between (the provider iframes have their own adapters). */
+export type Engine = Exclude<AnyEngine, "youtube" | "vimeo">;
 
-/** Whether a failure on `engine` is worth one retry on the other engine. */
-export function shouldFallBack(engine: Engine, message: string): boolean {
-  // <video> said it can't decode this (MEDIA_ERR_SRC_NOT_SUPPORTED / MEDIA_ERR_DECODE / no video track).
-  if (engine === "native") return message.startsWith(INCOMPATIBLE_MESSAGE);
+/** How long Safari's own HLS player may take to reach metadata before hls.js gets its one try. */
+export const NATIVE_HLS_START_TIMEOUT_MS = 15_000;
+
+/**
+ * Whether a failure on `engine` is worth one retry on the next engine (never more:
+ * the player switches at most once per source).
+ */
+export function shouldFallBack(engine: Engine, message: string, kind: SourceKind = "file"): boolean {
+  const code = classifyFailure(engine, message);
+  if (isTerminal(code)) return false;
+  if (engine === "native") {
+    // Safari's HLS player failed to decode, to load, or to start at all: hls.js fetches and
+    // retries on its own (it needs CORS, which Safari doesn't), so it gets one try.
+    if (kind === "hls") return code === "FORMAT_UNSUPPORTED" || code === "NETWORK_ERROR" || code === "NETWORK_TIMEOUT";
+    // A file <video> can't decode (MEDIA_ERR_SRC_NOT_SUPPORTED / MEDIA_ERR_DECODE / no video track).
+    // A network error from <video> would fail the same way on Movi.
+    return message.startsWith(INCOMPATIBLE_MESSAGE);
+  }
   // Movi failed for any reason (no WebCodecs, CORS, no Range): <video> needs neither CORS nor Range.
+  // hls.js failed: the browser's own HLS player (where there is one) needs no CORS either.
   return true;
 }
 
@@ -25,20 +45,36 @@ export function finalMessage(first: { engine: Engine; message: string }, second:
   return second;
 }
 
+export type FallbackOptions = {
+  /** What the room is playing: "file" (native/Movi) or "hls"/"dash" (stream engines). */
+  kind?: SourceKind;
+  /** Where attempts are recorded for the diagnostics panel. */
+  session?: DiagnosticsSession;
+  /** Override of NATIVE_HLS_START_TIMEOUT_MS (tests). */
+  startTimeoutMs?: number;
+};
+
 /**
- * A direct media file played by <video> or Movi, switching once if the first
- * can't play it. The switch is local to this device: the room's source and
- * revision don't change, so the host can be on Movi while a guest is on <video>.
- * Position, play/pause, volume, mute and rate carry over; the URL is passed
- * through exactly as pasted.
+ * A source played by the engines its plan lists (<video>, Movi, hls.js,
+ * dash.js), switching once if the first can't play it. The switch is local to
+ * this device: the room's source and revision don't change, so the host can be
+ * on Movi while a guest is on <video>, or Safari's own HLS while Chrome uses
+ * hls.js. Position, play/pause, volume, mute and rate carry over; the URL is
+ * passed through exactly as pasted.
  *
  * When Movi is refused byte-range access, the redirect chain is resolved once on
  * the server (headers only, never bytes) and Movi is restarted once on the final
  * URL if this page can read it. That swap is local too and never loops.
  */
 export class FallbackPlayer implements PlayerAdapter {
-  readonly kind: SourceKind = "file";
+  readonly kind: SourceKind;
   private readonly events = new Emitter();
+  private readonly session: DiagnosticsSession | null;
+  /** Index of the engine in use within `order`. */
+  private step = 0;
+  private readonly startTimeoutMs: number;
+  /** Fires when Safari's HLS player hasn't started; cleared on ready, switch or destroy. */
+  private startTimer: ReturnType<typeof setTimeout> | null = null;
   private inner!: PlayerAdapter;
   private engine!: Engine;
   private off: (() => void) | null = null;
@@ -47,6 +83,7 @@ export class FallbackPlayer implements PlayerAdapter {
   private wantPlay = false;
   private volume: number | null = null;
   private muted: boolean | null = null;
+  private fit: PictureFit = "contain";
   private resume: { at: number; playing: boolean } | null = null;
   /** Set between a failure and the switch, so the failing adapter's last events are dropped. */
   private switching = false;
@@ -59,9 +96,13 @@ export class FallbackPlayer implements PlayerAdapter {
   constructor(
     private readonly container: HTMLElement,
     private readonly opts: PlayerOptions,
-    private readonly order: [Engine, Engine],
+    private readonly order: Engine[],
     private readonly refine: (url: string) => Promise<Refinement | null> = refineStreamUrl,
+    options: FallbackOptions = {},
   ) {
+    this.kind = options.kind ?? "file";
+    this.session = options.session ?? null;
+    this.startTimeoutMs = options.startTimeoutMs ?? NATIVE_HLS_START_TIMEOUT_MS;
     this.use(order[0]);
   }
 
@@ -79,12 +120,46 @@ export class FallbackPlayer implements PlayerAdapter {
     return this.inner.seekLead;
   }
 
+  private make(engine: Engine): PlayerAdapter {
+    switch (engine) {
+      case "movi":
+        return new MoviPlayerAdapter(this.container, this.opts);
+      case "hlsjs":
+        return new MediaElementAdapter("hls", this.container, this.opts);
+      case "dashjs":
+        return new MediaElementAdapter("dash", this.container, this.opts);
+      default:
+        return new MediaElementAdapter(this.kind === "hls" ? "hls" : "file", this.container, this.opts, true);
+    }
+  }
+
   private use(engine: Engine) {
     this.engine = engine;
-    this.inner =
-      engine === "movi" ? new MoviPlayerAdapter(this.container, this.opts) : new MediaElementAdapter("file", this.container, this.opts);
+    this.inner = this.make(engine);
+    this.session?.attempt(engine);
     this.inner.setRate(1);
     this.off = this.inner.on((e, detail) => this.onInner(e, detail));
+  }
+
+  /**
+   * A stalled start raises no error on Safari's HLS player (it just never loads metadata).
+   * When hls.js is next in line, give up on the native player after a bound and let it try.
+   * Stalls after playback started are ordinary buffering and never switch engines.
+   */
+  private armStartTimer() {
+    this.clearStartTimer();
+    if (this.engine !== "native" || this.kind !== "hls" || this.firstFailure || !this.order[this.step + 1]) return;
+    const inner = this.inner;
+    this.startTimer = setTimeout(() => {
+      this.startTimer = null;
+      if (this.destroyed || this.switching || inner !== this.inner || inner.ready()) return;
+      this.onInner("error", { message: STREAM_START_TIMEOUT_MESSAGE });
+    }, this.startTimeoutMs);
+  }
+
+  private clearStartTimer() {
+    if (this.startTimer) clearTimeout(this.startTimer);
+    this.startTimer = null;
   }
 
   private onInner(e: PlayerEvent, detail?: { message?: string }) {
@@ -93,24 +168,35 @@ export class FallbackPlayer implements PlayerAdapter {
       const message = detail?.message ?? "Playback failed.";
       if (this.engine === "movi" && message === RANGE_BLOCKED_MESSAGE && !this.refined && this.source) {
         this.refined = true;
+        this.session?.failed("RANGE_UNSUPPORTED", message);
         this.switching = true;
         void this.refineAndRetry(this.source, message);
         return;
       }
-      if (!this.firstFailure && shouldFallBack(this.engine, message)) {
+      this.clearStartTimer();
+      const next = this.order[this.step + 1];
+      if (!this.firstFailure && next && shouldFallBack(this.engine, message, this.kind)) {
         this.firstFailure = { engine: this.engine, message };
+        this.session?.failed(classifyFailure(this.engine, message, this.reason), message);
         this.switching = true;
+        this.step++;
         // Switch after the failing adapter has finished dispatching this event.
-        queueMicrotask(() => this.source && this.switchTo(this.order[1], this.source));
+        queueMicrotask(() => this.source && this.switchTo(next, this.source));
         return;
       }
       const final = this.firstFailure ? finalMessage(this.firstFailure, message) : message;
+      const blamed = final === message ? this.engine : (this.firstFailure?.engine ?? this.engine);
+      this.session?.failed(classifyFailure(blamed, final, this.reason), final, true);
       this.events.emit("error", { message: final });
       return;
     }
+    if (e === "playing") this.session?.playing(this.inner.mediaInfo?.());
     if (e === "ready") {
+      this.clearStartTimer();
+      this.session?.ready(this.inner.mediaInfo?.());
       if (this.volume !== null) this.inner.setVolume(this.volume);
       if (this.muted !== null) this.inner.setMuted(this.muted);
+      if (this.fit !== "contain") this.inner.setFit?.(this.fit);
       const r = this.resume;
       this.resume = null;
       this.events.emit(e, detail);
@@ -136,6 +222,7 @@ export class FallbackPlayer implements PlayerAdapter {
     this.switching = false;
     this.use(engine);
     this.inner.load(source);
+    this.armStartTimer();
   }
 
   /**
@@ -153,6 +240,7 @@ export class FallbackPlayer implements PlayerAdapter {
     }
     if (this.destroyed || source !== this.source) return;
     if (r && "url" in r) {
+      this.session?.resolved(safeHost(r.url), true);
       this.switchTo("movi", { ...source, url: r.url });
       return;
     }
@@ -167,6 +255,7 @@ export class FallbackPlayer implements PlayerAdapter {
     this.refined = false;
     this.reason = null;
     this.inner.load(source);
+    this.armStartTimer();
   }
   play() {
     this.wantPlay = true;
@@ -223,11 +312,19 @@ export class FallbackPlayer implements PlayerAdapter {
     this.muted = muted;
     this.inner.setMuted(muted);
   }
+  videoSize() {
+    return this.inner.videoSize?.() ?? null;
+  }
+  setFit(fit: PictureFit) {
+    this.fit = fit;
+    this.inner.setFit?.(fit);
+  }
   on(listener: PlayerListener) {
     return this.events.on(listener);
   }
   destroy() {
     this.destroyed = true;
+    this.clearStartTimer();
     this.off?.();
     this.events.clear();
     this.inner.destroy();

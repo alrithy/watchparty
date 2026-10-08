@@ -13,6 +13,7 @@ import type {
 } from "@/lib/room/types";
 import { createTransport, type ConnectionStatus, type RoomTransport } from "@/lib/realtime/transport";
 import { createPlayer } from "@/lib/player/create";
+import { playbackDiagnostics } from "@/lib/media/diagnostics";
 import type { PlayerAdapter, PlayerEvent } from "@/lib/player/types";
 import { ServerClock } from "@/lib/sync/clock";
 import { DRIFT_IGNORE, decideCorrection, expectedPosition } from "@/lib/sync/drift";
@@ -339,6 +340,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
     const stage = stageRef.current;
     const source = mediaRef.current;
     if (!stage || !source) {
+      playbackDiagnostics.clear();
       updateStatus("idle");
       return;
     }
@@ -397,7 +399,10 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
   // Debug/test handle: lets browser tests drive whichever player is active, including
   // cross-origin provider iframes. Exposes nothing the page doesn't already have.
   useEffect(() => {
-    (window as unknown as { __watchparty?: unknown }).__watchparty = { player: () => playerRef.current };
+    (window as unknown as { __watchparty?: unknown }).__watchparty = {
+      player: () => playerRef.current,
+      diagnostics: () => playbackDiagnostics.snapshot(),
+    };
   }, []);
 
   // Host heartbeat: re-anchor the reference so followers never extrapolate for long.

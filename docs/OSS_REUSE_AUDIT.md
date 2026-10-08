@@ -88,3 +88,21 @@ Checked from the package's LICENSE file and npm metadata on 2026-10-07.
   for this repo; no source, manifest or rule file was copied.
 - No new dependencies. The extension uses only Chrome's built-in
   `declarativeNetRequest` API.
+
+## Capability-aware routing (Milestone 4 Phase 1, 2026-10-08)
+
+No new dependencies. Routing and diagnostics use browser APIs only:
+`HTMLMediaElement.canPlayType`, `MediaSource` / `ManagedMediaSource`,
+WebCodecs `VideoDecoder` / `AudioDecoder.isConfigSupported`, and
+`navigator.mediaCapabilities.decodingInfo`. Facts taken from the installed
+packages' own source (not copied):
+
+| Package | Version | License | Fact used |
+| --- | --- | --- | --- |
+| hls-video-element | 1.5.11 | MIT | Uses hls.js whenever `Hls.isSupported()`; native HLS only otherwise |
+| hls.js | 1.7.3 | Apache-2.0 | Prefers `ManagedMediaSource` (iOS 17.1+) and disables remote playback for it |
+| dashjs | 5.2.1 | BSD-3-Clause | Creates a `ManagedMediaSource` when present |
+| movi-player | 0.4.1 | Apache-2.0 | `getMediaInfo()` for diagnostics; WASM audio fallback when `AudioDecoder` is missing |
+
+So Safari (macOS, iOS, Home Screen web apps) now gets a plain `<video>` for
+HLS first, with hls.js as the fallback. See `docs/M4_PLAYBACK_AUDIT.md`.

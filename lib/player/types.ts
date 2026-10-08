@@ -41,15 +41,37 @@ export interface PlayerAdapter {
   isBuffered?(seconds: number): boolean;
   /** Last fatal error, shown to the user. */
   error(): string | null;
+  /** Codec/size facts once ready, for diagnostics (optional). Never contains the URL. */
+  mediaInfo?(): MediaInfoSummary | null;
   /** Small rate nudges for drift correction. Returns false where the provider can't do fine-grained rates. */
   setRate(rate: number): boolean;
   rate(): number;
   /** Local listening preferences; never synced. */
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
+  /** Displayed picture size, once known; for sizing fullscreen to the picture (optional). */
+  videoSize?(): { width: number; height: number } | null;
+  /** Whole picture with bars ("contain", the default) or cropped to fill the box ("cover"). Local only (optional). */
+  setFit?(fit: PictureFit): void;
   on(listener: PlayerListener): () => void;
   destroy(): void;
 }
+
+export type PictureFit = "contain" | "cover";
+
+export type MediaInfoSummary = {
+  /** Picture size; absent while unknown (e.g. before the first frame of an MSE stream). */
+  width?: number;
+  height?: number;
+  /** Seconds, or NaN. */
+  duration: number;
+  container?: string;
+  videoCodec?: string;
+  audioCodec?: string;
+  audioTracks?: number;
+  /** Adaptive streams: how many quality levels. */
+  renditions?: number;
+};
 
 /** Tiny event hub shared by the adapters. */
 export class Emitter {

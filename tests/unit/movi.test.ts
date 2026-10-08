@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { INCOMPATIBLE_MESSAGE, prefersMovi, resolveSource } from "@/lib/media/source";
+import { DRM_MESSAGE, INCOMPATIBLE_MESSAGE, prefersMovi, resolveSource } from "@/lib/media/source";
 import type { MediaSource } from "@/lib/room/types";
 import type { PlayerEvent, PlayerListener } from "@/lib/player/types";
 
@@ -342,5 +342,119 @@ describe("redirect resolver retry", () => {
     await tick();
     expect(asked).toEqual([]);
     expect(FakeAdapter.made[1].engine).toBe("native");
+  });
+});
+
+const { playbackDiagnostics } = await import("@/lib/media/diagnostics");
+const { NO_CAPABILITIES } = await import("@/lib/media/capabilities");
+
+describe("routed engines", () => {
+  const hls: MediaSource = { kind: "hls", url: "https://cdn.example/master.m3u8?sig=1", label: "master.m3u8 (cdn.example)" };
+
+  it("moves from Safari's HLS to hls.js once, keeping position, and records both attempts", async () => {
+    FakeAdapter.made = [];
+    const session = playbackDiagnostics.begin(hls, { engines: ["native", "hlsjs"], reasons: [] }, NO_CAPABILITIES, "smart");
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "hlsjs"], undefined, { kind: "hls", session });
+    expect(p.kind).toBe("hls");
+    p.load(hls);
+    const native = FakeAdapter.made[0];
+    native.isReady = true;
+    native.emit("ready");
+    p.seek(1800);
+    native.emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    expect(native.destroyed).toBe(true);
+    const second = FakeAdapter.made[1];
+    expect(second.loaded).toBe(hls);
+    second.isReady = true;
+    second.emit("ready");
+    expect(second.t).toBe(1800);
+    expect(p.activeEngine()).toBe("hlsjs");
+    expect(playbackDiagnostics.snapshot()!.attempts.map((a) => [a.engine, a.outcome])).toEqual([
+      ["native", "failed"],
+      ["hlsjs", "ready"],
+    ]);
+  });
+
+  const NETWORK = "Network error while loading the video. Check the link and try again.";
+
+  it.each([
+    ["MEDIA_ERR_NETWORK", NETWORK, "NETWORK_ERROR"],
+    ["MEDIA_ERR_SRC_NOT_SUPPORTED", INCOMPATIBLE_MESSAGE, "FORMAT_UNSUPPORTED"],
+  ])("gives hls.js one try after Safari's HLS player reports %s", async (_name, message, code) => {
+    FakeAdapter.made = [];
+    const session = playbackDiagnostics.begin(hls, { engines: ["native", "hlsjs"], reasons: [] }, NO_CAPABILITIES, "smart");
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "hlsjs"], undefined, { kind: "hls", session });
+    const errors: string[] = [];
+    p.on((e, d) => e === "error" && errors.push(d?.message ?? ""));
+    p.load(hls);
+    FakeAdapter.made[0].emit("error", { message });
+    await tick();
+    expect(FakeAdapter.made).toHaveLength(2);
+    expect(p.activeEngine()).toBe("hlsjs");
+    expect(playbackDiagnostics.snapshot()!.attempts[0]).toMatchObject({ engine: "native", outcome: "failed", code });
+    // hls.js fails too: reported once, never a third engine or a loop back to native.
+    FakeAdapter.made[1].emit("error", { message: "Network error while loading the stream." });
+    await tick();
+    expect(FakeAdapter.made).toHaveLength(2);
+    expect(errors).toEqual(["Network error while loading the stream."]);
+    expect(playbackDiagnostics.snapshot()!.error).toMatchObject({ code: "NETWORK_ERROR" });
+    p.destroy();
+  });
+
+  it("gives up on a Safari HLS start that stalls without an error, once", async () => {
+    FakeAdapter.made = [];
+    const session = playbackDiagnostics.begin(hls, { engines: ["native", "hlsjs"], reasons: [] }, NO_CAPABILITIES, "smart");
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "hlsjs"], undefined, { kind: "hls", session, startTimeoutMs: 5 });
+    p.load(hls);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(FakeAdapter.made).toHaveLength(2);
+    expect(playbackDiagnostics.snapshot()!.attempts[0]).toMatchObject({ engine: "native", code: "NETWORK_TIMEOUT" });
+    // hls.js is the last engine: a slow start there just keeps waiting.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(FakeAdapter.made).toHaveLength(2);
+    p.destroy();
+  });
+
+  it("never switches for a stall once Safari's HLS player has started", async () => {
+    FakeAdapter.made = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "hlsjs"], undefined, { kind: "hls", startTimeoutMs: 5 });
+    p.load(hls);
+    const native = FakeAdapter.made[0];
+    native.isReady = true;
+    native.emit("ready");
+    native.emit("waiting");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(FakeAdapter.made).toHaveLength(1);
+    p.destroy();
+  });
+
+  it("still keeps a network error on a direct file on <video>", () => {
+    expect(shouldFallBack("native", NETWORK, "file")).toBe(false);
+    expect(shouldFallBack("native", NETWORK, "hls")).toBe(true);
+  });
+
+  it("never switches engines for DRM", async () => {
+    FakeAdapter.made = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["hlsjs", "native"], undefined, { kind: "hls" });
+    const errors: string[] = [];
+    p.on((e, d) => e === "error" && errors.push(d?.message ?? ""));
+    p.load(hls);
+    FakeAdapter.made[0].emit("error", { message: DRM_MESSAGE });
+    await tick();
+    expect(FakeAdapter.made).toHaveLength(1);
+    expect(errors).toEqual([DRM_MESSAGE]);
+  });
+
+  it("reports the only engine's failure when there is nothing to fall back to", async () => {
+    FakeAdapter.made = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native"]);
+    const errors: string[] = [];
+    p.on((e, d) => e === "error" && errors.push(d?.message ?? ""));
+    p.load(file("https://cdn.example/a.mkv"));
+    FakeAdapter.made[0].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    expect(FakeAdapter.made).toHaveLength(1);
+    expect(errors).toEqual([INCOMPATIBLE_MESSAGE]);
   });
 });
