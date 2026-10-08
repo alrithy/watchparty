@@ -13,6 +13,8 @@ q=(-hide_banner -loglevel error -y)
 [ -f "$dir/clip.mp4" ] || ffmpeg "${q[@]}" "${src[@]}" -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -g 25 \
   -b:v 300k -c:a libopus -b:a 64k -movflags +faststart -shortest "$dir/clip.mp4"
 [ -f "$dir/download" ] || cp "$dir/clip.mp4" "$dir/download"
+# A sanitized episode file name for the live Find Arabic subtitles check (no real media).
+[ -f "$dir/Silo S03E01.mp4" ] || cp "$dir/clip.mp4" "$dir/Silo S03E01.mp4"
 if [ ! -f "$dir/hls/index.m3u8" ]; then
   mkdir -p "$dir/hls"
   ffmpeg "${q[@]}" -i "$dir/clip.mp4" -c copy -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 \
