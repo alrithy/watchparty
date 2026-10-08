@@ -28,7 +28,7 @@ export default function RoomView({ roomId, clientId, role }: Props) {
     () => false,
   );
   const fullscreen = useFullscreen({ screenRef, stageRef, exitRef: exitFullscreenRef, nativeVideoFullscreen: nativeSubs });
-  useNativeSubtitles(stageRef, room.subtitles, fullscreen.nativeVideo && showSubtitles);
+  useNativeSubtitles(stageRef, room.subtitles, nativeSubs, fullscreen.nativeVideo && showSubtitles);
 
   // Local listening preferences, shared by the bar under the player and the fullscreen controls.
   const [muted, setMutedState] = useState(false);

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type RefObject } from "react";
 import { findNativeVideo, lockScroll, pickFullscreenMode } from "@/lib/fullscreen";
+import { showNativeSubtitles } from "@/components/useNativeSubtitles";
 
 type WebkitDocument = Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void };
 type WebkitElement = HTMLElement & { webkitRequestFullscreen?: () => void };
@@ -112,7 +113,10 @@ export function useFullscreen({ screenRef, stageRef, exitRef, nativeVideoFullscr
     if (mode === "standard") return void el.requestFullscreen().catch(() => setImmersive(true));
     if (mode === "webkit") return el.webkitRequestFullscreen?.();
     const video = nativeVideoFullscreen ? findNativeVideo(stageRef.current)?.video : null;
-    if (video?.webkitEnterFullscreen) video.webkitEnterFullscreen();
+    if (video?.webkitEnterFullscreen) {
+      showNativeSubtitles(video);
+      video.webkitEnterFullscreen();
+    }
     else setImmersive(true);
   }, [immersive, nativeVideoFullscreen, screenRef, stageRef]);
 

@@ -762,6 +762,9 @@ async function iPhoneContext(browser: Browser) {
   await ctx.addInitScript(() => {
     Object.defineProperty(Document.prototype, "fullscreenEnabled", { get: () => false });
     Object.defineProperty(Document.prototype, "webkitFullscreenEnabled", { get: () => false });
+    // iOS keeps media volume at 1; the side buttons own it.
+    const volume = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "volume")!;
+    Object.defineProperty(HTMLMediaElement.prototype, "volume", { get: volume.get, set() {} });
     const w = window as unknown as { nativeVideoFullscreen: number; nativeVideoExit: number };
     w.nativeVideoFullscreen = 0;
     w.nativeVideoExit = 0;
@@ -817,7 +820,8 @@ for (const clip of [CLIP, "/__test__/clip.mkv"]) {
     await expect(controls.getByRole("button", { name: "Pause" })).toBeVisible();
     await expect(controls.getByRole("slider", { name: "Seek" })).toBeVisible();
     await expect(controls.getByRole("button", { name: "Mute" })).toBeVisible();
-    await expect(controls.getByRole("slider", { name: "Volume" })).toBeVisible();
+    // No inert volume slider on iPhone: Mute here, level on the side buttons.
+    await expect(controls.getByRole("slider", { name: "Volume" })).toHaveCount(0);
 
     // The player covers the viewport and the 16:9 picture fits inside it, with the subtitles on it.
     const check = async (w: number, h: number) => {
@@ -914,16 +918,6 @@ test("iPhone, nativesubs experiment: Apple's player gets the subtitles as a nati
   const roomUrl = await hostRoom(host);
   await host.goto(`${roomUrl}?nativesubs=1`);
   await expect.poll(async () => (await info(host)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
-  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
-  await host.getByTestId("subtitle-later").click();
-  await act(host, { seek: 2 });
-  await expect(host.getByTestId("subtitle-text")).toHaveCount(1, { timeout: 10_000 });
-
-  await tapFullscreen(host);
-  expect(await counter(host, "nativeVideoFullscreen")).toBe(1);
-  await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
-  // Only one set of subtitles: the overlay steps aside for the native track.
-  await expect(host.getByTestId("subtitle-text")).toHaveCount(0);
   const track = () =>
     video(host).evaluate((v: HTMLVideoElement) => {
       const t = v.textTracks[0];
@@ -932,6 +926,19 @@ test("iPhone, nativesubs experiment: Apple's player gets the subtitles as a nati
       if (mode === "disabled") return { mode, cues: [] };
       return { mode, cues: Array.from(t.cues ?? []).map((c) => [c.startTime, c.endTime, (c as VTTCue).text]) };
     });
+  await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+  await host.getByTestId("subtitle-later").click();
+  await act(host, { seek: 2 });
+  await expect(host.getByTestId("subtitle-text")).toHaveCount(1, { timeout: 10_000 });
+  // Installed before Apple's player opens (Safari may not draw a track added later), but hidden inline.
+  await expect.poll(async () => (await track())?.mode).toBe("hidden");
+  expect((await track())?.cues).toHaveLength(2);
+
+  await tapFullscreen(host);
+  expect(await counter(host, "nativeVideoFullscreen")).toBe(1);
+  await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
+  // Only one set of subtitles: the overlay steps aside for the native track.
+  await expect(host.getByTestId("subtitle-text")).toHaveCount(0);
   await expect.poll(track).toEqual({
     mode: "showing",
     cues: [
@@ -943,9 +950,9 @@ test("iPhone, nativesubs experiment: Apple's player gets the subtitles as a nati
   await host.getByTestId("subtitle-later").evaluate((b: HTMLButtonElement) => b.click());
   await expect.poll(async () => (await track())?.cues[0]).toEqual([1, 11, "مرحبا بكم في الحفلة"]);
 
-  // Leaving Apple's player switches the track off and brings the overlay back.
+  // Leaving Apple's player hides the track again and brings the overlay back.
   await video(host).evaluate((v: HTMLVideoElement & { webkitExitFullscreen(): void }) => v.webkitExitFullscreen());
-  await expect.poll(async () => (await track())?.mode).toBe("disabled");
+  await expect.poll(async () => (await track())?.mode).toBe("hidden");
   await expect(host.getByTestId("subtitle-text")).toHaveCount(1, { timeout: 10_000 });
   await ctx.close();
 });

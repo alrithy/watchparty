@@ -10,8 +10,8 @@ const HIDE_MS = 3000;
 /**
  * Controls inside the app's iPhone fullscreen, where the <video>'s own controls are off. The host
  * gets play/pause and seek (they go through the player, so the room follows as it does for the
- * native controls); everyone gets mute and volume. iPhone ignores page volume, so there the
- * slider does nothing and the side buttons set the level.
+ * native controls); everyone gets mute, and volume where the page can set it (not on iPhone,
+ * where only the side buttons change the level).
  */
 export function ImmersiveControls({
   isHost,
@@ -34,6 +34,7 @@ export function ImmersiveControls({
   const [now, setNow] = useState({ t: 0, d: NaN, playing: false });
   const [dragging, setDragging] = useState<number | null>(null);
   const [visible, setVisible] = useState(true);
+  const [volumeWorks] = useState(canSetVolume);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Shown on any tap or focus; fade out while playing, stay while paused.
@@ -133,17 +134,19 @@ export function ImmersiveControls({
       >
         <span aria-hidden="true">{muted ? "🔇" : "🔊"}</span>
       </button>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.05}
-        value={volume}
-        aria-label="Volume"
-        data-testid="immersive-volume"
-        className="w-20"
-        onChange={(e) => onVolume(Number(e.target.value))}
-      />
+      {volumeWorks && (
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={volume}
+          aria-label="Volume"
+          data-testid="immersive-volume"
+          className="w-20"
+          onChange={(e) => onVolume(Number(e.target.value))}
+        />
+      )}
     </div>
   );
 
@@ -159,4 +162,11 @@ function clock(s: number) {
   const m = Math.floor((t % 3600) / 60);
   const sec = String(t % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+/** iOS keeps media volume at 1 whatever the page sets (the hardware buttons own it). */
+function canSetVolume() {
+  const probe = document.createElement("audio");
+  probe.volume = 0.5;
+  return probe.volume !== 1;
 }
