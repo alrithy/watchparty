@@ -288,7 +288,7 @@ DRM_AUTH_REQUIRED.
 | Same | smart | Browser player (Safari HLS) | PASSED (picture + sound) |
 | Same, two devices | smart | Browser player | PASSED (stayed in sync, user-observed; no measured drift) |
 | 30-min seek / pause / reconnect | – | – | not yet run |
-| Home Screen Web App | – | – | not yet run |
+| Home Screen Web App, same no-CORS HLS | smart | Browser player (Safari HLS) | PASSED (picture + sound confirmed by the user; 416×234, 1 audio, ready 1729 ms) |
 | No-CORS HLS (public test host, playlist sent without `Access-Control-Allow-Origin`, checked with `curl`) | legacy | hls.js | FAILED as expected (`NETWORK_ERROR`, single attempt) |
 | Same | smart | Browser player (Safari HLS) | PASSED (picture + sound confirmed by the user; 416×234, 1 audio, ready 1906 ms) |
 | AirPlay | – | – | not yet run |
