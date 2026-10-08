@@ -897,8 +897,9 @@ for (const clip of [CLIP, "/__test__/clip.mkv"]) {
   });
 }
 
-for (const clip of ["/__test__/wide.webm", "/__test__/wide.mkv"]) {
-  test(`iPhone fullscreen sizes to a 2.39:1 picture with no extra bars, Fit and Fill (${clip.endsWith(".mkv") ? "Movi" : "video"})`, async ({ browser }) => {
+// A 2.40:1 film used to sit in a 16:9 box: black bars on all four sides at once.
+for (const clip of ["/__test__/wide.mp4", "/__test__/wide.mkv"]) {
+  test(`iPhone fullscreen sizes to a 2.40:1 picture with no extra bars, Fit and Fill (${clip.endsWith(".mkv") ? "Movi" : "video"})`, async ({ browser }) => {
     const ctx = await iPhoneContext(browser);
     const host = await ctx.newPage();
     await hostRoom(host, clip);
@@ -908,7 +909,7 @@ for (const clip of ["/__test__/wide.webm", "/__test__/wide.mkv"]) {
     await tapFullscreen(host);
     await expect(host.getByTestId("screen")).toHaveAttribute("data-immersive", "true");
 
-    const ratio = 478 / 200;
+    const ratio = 480 / 200;
     // The picture box has the picture's own shape and is as large as fits: bars on one axis at most.
     const check = async (w: number, h: number) => {
       await expect.poll(async () => {
@@ -942,14 +943,15 @@ for (const clip of ["/__test__/wide.webm", "/__test__/wide.mkv"]) {
     await controls.getByRole("button", { name: "Fill screen" }).tap();
     await expect(host.getByTestId("screen")).toHaveAttribute("data-fit", "cover");
     await expect.poll(() => box(host, "frame")).toEqual({ x: 0, y: 0, width: 844, height: 390 });
-    if (clip.endsWith(".webm")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("cover");
+    if (clip.endsWith(".mp4")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("cover");
     await expect(host.getByTestId("subtitle-text").locator("p")).toBeInViewport({ ratio: 1 });
     await controls.getByRole("button", { name: "Fit whole picture" }).tap();
     await check(844, 390);
-    if (clip.endsWith(".webm")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("contain");
+    if (clip.endsWith(".mp4")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("contain");
 
     // Leaving fullscreen puts the normal page player back as it was.
-    await host.keyboard.press("Escape");
+    await host.getByTestId("exit-fullscreen").click();
+    await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
     const page = await box(host, "frame");
     expect(page.width / page.height).toBeCloseTo(16 / 9, 1);
     await ctx.close();
