@@ -70,7 +70,7 @@ export default function RdCompatibilityLab() {
     const timer = window.setInterval(() => {
       const video = videoRef.current;
       if (!video) return;
-      const seconds = Math.round((Date.now() - startedAt.current) / 1000);
+      const seconds = Math.round((window.performance.now() - startedAt.current) / 1000);
       setElapsed(seconds);
       setStats(safeMediaState(video));
       // Safari can sit on a black element without emitting an 'error'.
@@ -130,7 +130,7 @@ export default function RdCompatibilityLab() {
     }
   };
 
-  const playVideo = (quality: string, providerUrl: string) => {
+  const playVideo = (quality: string, providerUrl: string, eventTimestamp: number) => {
     // Do NOT create the <video> after this click. Safari may otherwise lose the
     // user activation needed for unmuted playback.
     const video = videoRef.current;
@@ -146,7 +146,7 @@ export default function RdCompatibilityLab() {
     setDetails("User-initiated request sent to Safari Native HLS.");
     setElapsed(0);
     setStats(initialState);
-    startedAt.current = Date.now();
+    startedAt.current = eventTimestamp;
     video.src = providerUrl;
     video.load();
     // Must occur synchronously inside the quality-button's user gesture.
@@ -171,12 +171,12 @@ export default function RdCompatibilityLab() {
     });
   };
 
-  const retry = () => {
+  const retry = (eventTimestamp: number) => {
     const video = videoRef.current;
     if (!video || !video.src) return;
     setDetails("User-initiated playback retry.");
     setPhase("loading");
-    startedAt.current = Date.now();
+    startedAt.current = eventTimestamp;
     void video.play().then(() => {
       setPhase("playing");
       setDetails("Safari accepted play() and started playback.");
@@ -230,10 +230,10 @@ export default function RdCompatibilityLab() {
         <h2 className="font-semibold">Apple HLS renditions ({result.variants.length})</h2>
         <p className="text-sm text-zinc-400">Provider duration: {result.durationSeconds === null ? "Unknown — cannot verify timeline" : `${result.durationSeconds.toFixed(1)} seconds`}. The original and HLS timelines must match before room synchronization.</p>
         <div className="flex flex-wrap gap-2">
-          {result.variants.map((v, i) => <button key={i} className="rounded border border-zinc-500 px-3 py-2 text-sm" onClick={() => playVideo(v.quality, v.url)}>Play {v.quality}</button>)}
+          {result.variants.map((v, i) => <button key={i} className="rounded border border-zinc-500 px-3 py-2 text-sm" onClick={event => playVideo(v.quality, v.url, event.timeStamp)}>Play {v.quality}</button>)}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button disabled={!selectedQuality} onClick={retry} className="rounded bg-zinc-100 px-3 py-2 text-sm text-zinc-950 disabled:opacity-50">Start / Retry playback</button>
+          <button disabled={!selectedQuality} onClick={event => retry(event.timeStamp)} className="rounded bg-zinc-100 px-3 py-2 text-sm text-zinc-950 disabled:opacity-50">Start / Retry playback</button>
           {selectedQuality && <span className="text-sm text-zinc-400">Quality: {selectedQuality}</span>}
         </div>
         <div className="rounded border border-zinc-700 bg-zinc-950 p-3 text-sm" data-testid="rd-playback-diagnostics" role="status">
