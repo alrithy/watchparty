@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { lockScroll, pickFullscreenMode } from "@/lib/fullscreen";
+import { nativeCues } from "@/lib/subtitles/native";
 
 const fn = () => () => Promise.resolve();
 
@@ -50,5 +51,24 @@ describe("lockScroll", () => {
     unlock();
     unlock();
     expect(win.scrollTo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("nativeCues", () => {
+  const cues = [
+    { start: 0, end: 2, text: "مرحبا" },
+    { start: 5, end: 8, text: "a < b & c" },
+  ];
+
+  it("moves cues by the shared subtitle delay, like the overlay", () => {
+    expect(nativeCues(cues, 0.5)).toEqual([
+      { start: 0.5, end: 2.5, text: "مرحبا" },
+      { start: 5.5, end: 8.5, text: "a &lt; b &amp; c" },
+    ]);
+  });
+
+  it("drops cues that end before the video starts and clamps the rest", () => {
+    expect(nativeCues(cues, -3)).toEqual([{ start: 2, end: 5, text: "a &lt; b &amp; c" }]);
+    expect(nativeCues(cues, -1)[0]).toEqual({ start: 0, end: 1, text: "مرحبا" });
   });
 });

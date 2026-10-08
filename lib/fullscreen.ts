@@ -69,3 +69,19 @@ export function lockScroll(doc: ScrollDocument, win: ScrollWindow): () => void {
     win.scrollTo(scrollX, scrollY);
   };
 }
+
+export type NativeVideo = HTMLVideoElement & {
+  webkitEnterFullscreen?: () => void;
+  webkitExitFullscreen?: () => void;
+};
+
+/**
+ * The player's <video> (also the one inside <hls-video>/<dash-video>) and the element that owns
+ * its `controls`, or null for Movi's canvas and the iframe players.
+ */
+export function findNativeVideo(stage: ParentNode | null): { owner: HTMLElement & { controls: boolean }; video: NativeVideo } | null {
+  const owner = stage?.querySelector<HTMLElement & { controls: boolean; nativeEl?: unknown }>('[data-testid="video"]');
+  if (!owner) return null;
+  const video = owner instanceof HTMLVideoElement ? owner : owner.nativeEl;
+  return video instanceof HTMLVideoElement ? { owner, video } : null;
+}

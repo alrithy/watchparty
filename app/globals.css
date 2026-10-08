@@ -4,8 +4,7 @@ body {
   background: #050506;
   color: #e4e4e7;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  padding-left: env(safe-area-inset-left);
-  padding-right: env(safe-area-inset-right);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 /*
@@ -24,4 +23,15 @@ body {
 .immersive-exit {
   top: calc(env(safe-area-inset-top) + 0.75rem);
   right: calc(env(safe-area-inset-right) + 0.75rem);
+}
+/* Subtitles move up while the fullscreen controls are showing, and Movi's own bar gives way to them. */
+.immersive-screen:has([data-testid="immersive-controls"][data-visible]) [data-testid="subtitle-text"] {
+  bottom: max(7%, calc(env(safe-area-inset-bottom) + 4.5rem));
+}
+.immersive-screen [data-testid="movi-controls"] {
+  display: none;
+}
+.immersive-controls {
+  padding: 2rem calc(env(safe-area-inset-right) + 0.75rem) calc(env(safe-area-inset-bottom) + 0.75rem)
+    calc(env(safe-area-inset-left) + 0.75rem);
 }

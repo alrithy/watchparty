@@ -3,11 +3,12 @@
 import { useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
 import type { PresenceInfo, Role } from "@/lib/room/types";
-import type { PlayerAdapter } from "@/lib/player/types";
 import { useWatchParty } from "@/components/useWatchParty";
 import { prepareSource } from "@/lib/media/prepare";
 import { SubtitleControls, SubtitleOverlay } from "@/components/Subtitles";
 import { useFullscreen } from "@/components/useFullscreen";
+import { useNativeSubtitles } from "@/components/useNativeSubtitles";
+import { ImmersiveControls } from "@/components/ImmersiveControls";
 
 type Props = { roomId: string; clientId: string; role: Role };
 
@@ -20,7 +21,26 @@ export default function RoomView({ roomId, clientId, role }: Props) {
   const { media, mediaError } = room;
   const [showSubtitles, setShowSubtitles] = useState(true);
   const exitFullscreenRef = useRef<HTMLButtonElement>(null);
-  const fullscreen = useFullscreen(screenRef, exitFullscreenRef);
+  // Experiment: `?nativesubs=1` tries iPhone's own video fullscreen with native subtitle tracks.
+  const nativeSubs = useSyncExternalStore(
+    noopSubscribe,
+    () => new URLSearchParams(window.location.search).get("nativesubs") === "1",
+    () => false,
+  );
+  const fullscreen = useFullscreen({ screenRef, stageRef, exitRef: exitFullscreenRef, nativeVideoFullscreen: nativeSubs });
+  useNativeSubtitles(stageRef, room.subtitles, fullscreen.nativeVideo && showSubtitles);
+
+  // Local listening preferences, shared by the bar under the player and the fullscreen controls.
+  const [muted, setMutedState] = useState(false);
+  const [volume, setVolumeState] = useState(1);
+  const setMuted = (next: boolean) => {
+    room.playerRef.current?.setMuted(next);
+    setMutedState(next);
+  };
+  const setVolume = (next: number) => {
+    room.playerRef.current?.setVolume(next);
+    setVolumeState(next);
+  };
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-6">
@@ -60,7 +80,11 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         <div data-testid="frame" className="immersive-frame relative w-full">
           {/* The player adapter renders its <video> or provider iframe in here. */}
           <div ref={stageRef} data-testid="stage" data-kind={media?.kind ?? ""} className="w-full" />
-          <SubtitleOverlay track={room.subtitles} playerRef={room.playerRef} visible={showSubtitles} />
+          <SubtitleOverlay
+            track={room.subtitles}
+            playerRef={room.playerRef}
+            visible={showSubtitles && !fullscreen.nativeVideo}
+          />
           {!media && <div className="aspect-video w-full" />}
         </div>
         {!media && (
@@ -83,6 +107,17 @@ export default function RoomView({ roomId, clientId, role }: Props) {
           </Overlay>
         )}
         {fullscreen.immersive && (
+          <ImmersiveControls
+            isHost={isHost}
+            playerRef={room.playerRef}
+            areaRef={screenRef}
+            muted={muted}
+            volume={volume}
+            onMuted={setMuted}
+            onVolume={setVolume}
+          />
+        )}
+        {fullscreen.immersive && (
           <button
             ref={exitFullscreenRef}
             data-testid="exit-fullscreen"
@@ -95,7 +130,15 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         )}
       </div>
 
-      <PlayerBar isHost={isHost} playerRef={room.playerRef} fullscreen={fullscreen.active} onFullscreen={fullscreen.toggle} />
+      <PlayerBar
+        isHost={isHost}
+        muted={muted}
+        volume={volume}
+        onMuted={setMuted}
+        onVolume={setVolume}
+        fullscreen={fullscreen.active}
+        onFullscreen={fullscreen.toggle}
+      />
 
       <Panel title="Watch">
         {isHost && <SourceForm onLoad={room.loadMedia} />}
@@ -202,17 +245,21 @@ function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["load
 /** Local controls under the player: guests get volume (the host uses the player's own), everyone gets fullscreen. */
 function PlayerBar({
   isHost,
-  playerRef,
+  muted,
+  volume,
+  onMuted,
+  onVolume,
   fullscreen,
   onFullscreen,
 }: {
   isHost: boolean;
-  playerRef: React.RefObject<PlayerAdapter | null>;
+  muted: boolean;
+  volume: number;
+  onMuted: (muted: boolean) => void;
+  onVolume: (volume: number) => void;
   fullscreen: boolean;
   onFullscreen: () => void;
 }) {
-  const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
   const btn = "rounded border border-zinc-700 px-3 py-1 hover:border-zinc-400";
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
@@ -220,10 +267,7 @@ function PlayerBar({
         <>
           <button
             className={btn}
-            onClick={() => {
-              playerRef.current?.setMuted(!muted);
-              setMuted(!muted);
-            }}
+            onClick={() => onMuted(!muted)}
           >
             {muted ? "Unmute" : "Mute"}
           </button>
@@ -234,11 +278,7 @@ function PlayerBar({
             step={0.05}
             value={volume}
             aria-label="Volume"
-            onChange={(e) => {
-              const next = Number(e.target.value);
-              playerRef.current?.setVolume(next);
-              setVolume(next);
-            }}
+            onChange={(e) => onVolume(Number(e.target.value))}
           />
         </>
       )}
