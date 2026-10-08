@@ -5,7 +5,7 @@ import { stripExtension } from "@/lib/subtitles/search/release";
 const noStore = { "Cache-Control": "no-store, max-age=0" };
 const OEMBED_TIMEOUT_MS = 4000;
 
-type Body = { kind?: unknown; url?: unknown; videoId?: unknown; title?: unknown };
+type Body = { kind?: unknown; url?: unknown; videoId?: unknown; title?: unknown; diagnose?: unknown };
 
 /** The page title of a YouTube/Vimeo video, via the providers' public oEmbed endpoints. */
 async function oembedTitle(kind: string, videoId: string): Promise<string | null> {
@@ -29,7 +29,13 @@ function fileNameOf(url: string): string | null {
   try {
     const last = new URL(url).pathname.split("/").filter(Boolean).pop();
     if (!last) return null;
-    const name = decodeURIComponent(last);
+    // Some links encode the name twice ("Silo%2520S03E01.mp4").
+    let name = decodeURIComponent(last);
+    if (/%[0-9a-f]{2}/i.test(name)) {
+      try {
+        name = decodeURIComponent(name);
+      } catch {}
+    }
     // Only names that look like a release, not ids like "manifest.mpd" or a bare hash.
     return /[a-z]{2,}.*[.\s_-]/i.test(stripExtension(name)) ? name : null;
   } catch {
@@ -38,8 +44,9 @@ function fileNameOf(url: string): string | null {
 }
 
 /**
- * POST { kind, url, videoId?, title? } -> ranked Arabic subtitles for the
- * room's video. `title` is what the host typed when detection wasn't enough.
+ * POST { kind, url, videoId?, title?, diagnose? } -> ranked Arabic subtitles for
+ * the room's video, with per-query diagnostics (counts and error codes only).
+ * `title` is what the host typed when detection wasn't enough.
  */
 export async function POST(request: Request) {
   if (isCrossSite(request)) return Response.json({ error: "Forbidden." }, { status: 403, headers: noStore });
@@ -67,6 +74,7 @@ export async function POST(request: Request) {
   if (!wanted.title && !wanted.imdbId) {
     return Response.json({ needTitle: true, wanted: { title: null }, results: [], autoSelect: false, errors: [] }, { headers: noStore });
   }
-  const result = await findSubtitles(wanted);
+  // diagnose: also run the fallback queries, to see what each returns.
+  const result = await findSubtitles(wanted, { allQueries: body.diagnose === true });
   return Response.json({ needTitle: false, ...result }, { headers: noStore });
 }
