@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent } from "react";
 import Link from "next/link";
 import type { PresenceInfo, Role } from "@/lib/room/types";
 import { useWatchParty } from "@/components/useWatchParty";
@@ -77,7 +77,11 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         }
       >
         {/* The subtitle overlay sits on the picture itself, so it stays on the video in any fullscreen. */}
-        <div data-testid="frame" className="immersive-frame relative w-full">
+        <div
+          data-testid="frame"
+          className="immersive-frame relative w-full"
+          style={{ "--wp-media-width": room.videoSize.width, "--wp-media-height": room.videoSize.height } as CSSProperties}
+        >
           {/* The player adapter renders its <video> or provider iframe in here. */}
           <div ref={stageRef} data-testid="stage" data-kind={media?.kind ?? ""} className="w-full" />
           <SubtitleOverlay
