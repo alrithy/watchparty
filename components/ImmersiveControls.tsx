@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import type { PlayerAdapter } from "@/lib/player/types";
+import type { PictureFit, PlayerAdapter } from "@/lib/player/types";
 
 const TICK_MS = 250;
 /** How long the controls stay up after a tap while playing. */
@@ -21,6 +21,8 @@ export function ImmersiveControls({
   volume,
   onMuted,
   onVolume,
+  fit,
+  onFit,
 }: {
   isHost: boolean;
   playerRef: RefObject<PlayerAdapter | null>;
@@ -30,6 +32,8 @@ export function ImmersiveControls({
   volume: number;
   onMuted: (muted: boolean) => void;
   onVolume: (volume: number) => void;
+  fit: PictureFit;
+  onFit: (fit: PictureFit) => void;
 }) {
   const [now, setNow] = useState({ t: 0, d: NaN, playing: false });
   const [dragging, setDragging] = useState<number | null>(null);
@@ -133,6 +137,16 @@ export function ImmersiveControls({
         onClick={() => onMuted(!muted)}
       >
         <span aria-hidden="true">{muted ? "🔇" : "🔊"}</span>
+      </button>
+      <button
+        type="button"
+        className={btn}
+        data-testid="immersive-fit"
+        aria-label={fit === "cover" ? "Fit whole picture" : "Fill screen"}
+        aria-pressed={fit === "cover"}
+        onClick={() => onFit(fit === "cover" ? "contain" : "cover")}
+      >
+        {fit === "cover" ? "Fit" : "Fill"}
       </button>
       {volumeWorks && (
         <input

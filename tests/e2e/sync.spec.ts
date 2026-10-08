@@ -897,6 +897,65 @@ for (const clip of [CLIP, "/__test__/clip.mkv"]) {
   });
 }
 
+for (const clip of ["/__test__/wide.webm", "/__test__/wide.mkv"]) {
+  test(`iPhone fullscreen sizes to a 2.39:1 picture with no extra bars, Fit and Fill (${clip.endsWith(".mkv") ? "Movi" : "video"})`, async ({ browser }) => {
+    const ctx = await iPhoneContext(browser);
+    const host = await ctx.newPage();
+    await hostRoom(host, clip);
+    if (clip.endsWith(".mkv")) await expect(host.locator('[data-provider="movi"]')).toHaveCount(1);
+    await host.getByTestId("subtitle-file").setInputFiles({ name: "arabic.srt", mimeType: "application/x-subrip", buffer: Buffer.from(SRT) });
+    await act(host, { seek: 2 });
+    await tapFullscreen(host);
+    await expect(host.getByTestId("screen")).toHaveAttribute("data-immersive", "true");
+
+    const ratio = 478 / 200;
+    // The picture box has the picture's own shape and is as large as fits: bars on one axis at most.
+    const check = async (w: number, h: number) => {
+      await expect.poll(async () => {
+        const f = await box(host, "frame");
+        return Math.round(f.width / f.height * 100) / 100;
+      }).toBeCloseTo(ratio, 1);
+      const f = await box(host, "frame");
+      expect(f.width).toBeCloseTo(Math.min(w, h * ratio), 0);
+      expect(f.height).toBeCloseTo(Math.min(h, w / ratio), 0);
+      // Centred, and the player inside fills it (no 16:9 box inside the picture box).
+      expect(f.x).toBeCloseTo((w - f.width) / 2, 0);
+      expect(f.y).toBeCloseTo((h - f.height) / 2, 0);
+      const player = (await host.getByTestId("stage").locator(":scope > *").first().boundingBox())!;
+      expect(player).toEqual(f);
+      // Subtitles sit on the picture, not on a black strip.
+      const line = host.getByTestId("subtitle-text").locator("p");
+      await expect(line).toHaveText("مرحبا بكم في الحفلة", { timeout: 10_000 });
+      const text = await box(host, "subtitle-text");
+      expect(text.y).toBeGreaterThanOrEqual(f.y);
+      expect(text.y + text.height).toBeLessThanOrEqual(f.y + f.height + 0.5);
+    };
+    await check(844, 390);
+    await host.setViewportSize({ width: 390, height: 844 });
+    await check(390, 844);
+    await host.setViewportSize({ width: 844, height: 390 });
+    await check(844, 390);
+
+    // Fill crops to cover the screen; Fit (the default) brings the whole picture back.
+    const controls = host.getByTestId("immersive-controls");
+    await host.getByTestId("frame").tap();
+    await controls.getByRole("button", { name: "Fill screen" }).tap();
+    await expect(host.getByTestId("screen")).toHaveAttribute("data-fit", "cover");
+    await expect.poll(() => box(host, "frame")).toEqual({ x: 0, y: 0, width: 844, height: 390 });
+    if (clip.endsWith(".webm")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("cover");
+    await expect(host.getByTestId("subtitle-text").locator("p")).toBeInViewport({ ratio: 1 });
+    await controls.getByRole("button", { name: "Fit whole picture" }).tap();
+    await check(844, 390);
+    if (clip.endsWith(".webm")) expect(await video(host).evaluate((v) => getComputedStyle(v).objectFit)).toBe("contain");
+
+    // Leaving fullscreen puts the normal page player back as it was.
+    await host.keyboard.press("Escape");
+    const page = await box(host, "frame");
+    expect(page.width / page.height).toBeCloseTo(16 / 9, 1);
+    await ctx.close();
+  });
+}
+
 test("iPhone: the video's own fullscreen button lands in the app's fullscreen instead", async ({ browser }) => {
   const ctx = await iPhoneContext(browser);
   const host = await ctx.newPage();

@@ -8,17 +8,35 @@ body {
 }
 
 /*
- * iPhone fullscreen (the app's own, so subtitles stay visible): the player box covers the
- * viewport inside the safe area, and the 16:9 picture is as large as fits either way round.
+ * iPhone fullscreen (the app's own, so subtitles stay visible). The picture box takes the shape of
+ * the actual picture (--media-ar, set from the video; 16:9 until known) and is as large as fits
+ * the whole screen, so there are bars on one axis at most. Fill (data-fit="cover") covers the
+ * screen and crops instead. The picture may run under the notch like Apple's player; controls,
+ * the exit button and subtitles keep to the safe area.
  */
 .immersive-screen {
+  --media-ar: 16 / 9;
+  height: 100vh;
   height: 100dvh;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   container-type: size;
   overscroll-behavior: contain;
 }
 .immersive-screen .immersive-frame {
-  width: min(100cqw, 100cqh * 16 / 9);
+  width: min(100cqw, 100cqh * var(--media-ar));
+  aspect-ratio: var(--media-ar);
+}
+.immersive-screen[data-fit="cover"] .immersive-frame {
+  width: 100cqw;
+  height: 100cqh;
+  aspect-ratio: auto;
+}
+.immersive-screen .immersive-frame [data-testid="stage"],
+.immersive-screen .immersive-frame [data-testid="stage"] > * {
+  height: 100%;
+  aspect-ratio: auto;
+}
+.immersive-screen [data-testid="subtitle-text"] {
+  bottom: max(7%, calc(env(safe-area-inset-bottom) + 0.75rem));
 }
 .immersive-exit {
   top: calc(env(safe-area-inset-top) + 0.75rem);

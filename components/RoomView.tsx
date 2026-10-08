@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent } from "react";
 import Link from "next/link";
 import type { PresenceInfo, Role } from "@/lib/room/types";
 import { useWatchParty } from "@/components/useWatchParty";
@@ -9,6 +9,8 @@ import { SubtitleControls, SubtitleOverlay } from "@/components/Subtitles";
 import { useFullscreen } from "@/components/useFullscreen";
 import { useNativeSubtitles } from "@/components/useNativeSubtitles";
 import { ImmersiveControls } from "@/components/ImmersiveControls";
+import { usePictureAspect } from "@/components/usePictureAspect";
+import type { PictureFit } from "@/lib/player/types";
 
 type Props = { roomId: string; clientId: string; role: Role };
 
@@ -29,6 +31,13 @@ export default function RoomView({ roomId, clientId, role }: Props) {
   );
   const fullscreen = useFullscreen({ screenRef, stageRef, exitRef: exitFullscreenRef, nativeVideoFullscreen: nativeSubs });
   useNativeSubtitles(stageRef, room.subtitles, nativeSubs, fullscreen.nativeVideo && showSubtitles);
+
+  // iPhone fullscreen is sized to the picture's real shape; Fill crops it to cover the screen instead.
+  const aspect = usePictureAspect(room.playerRef, fullscreen.immersive);
+  const [fit, setFit] = useState<PictureFit>("contain");
+  useEffect(() => {
+    room.playerRef.current?.setFit?.(fullscreen.immersive ? fit : "contain");
+  }, [fit, fullscreen.immersive, media, room.playerRef]);
 
   // Local listening preferences, shared by the bar under the player and the fullscreen controls.
   const [muted, setMutedState] = useState(false);
@@ -67,6 +76,8 @@ export default function RoomView({ roomId, clientId, role }: Props) {
         ref={screenRef}
         data-testid="screen"
         data-immersive={fullscreen.immersive || undefined}
+        data-fit={fullscreen.immersive ? fit : undefined}
+        style={aspect ? ({ "--media-ar": aspect } as CSSProperties) : undefined}
         role={fullscreen.immersive ? "dialog" : undefined}
         aria-modal={fullscreen.immersive || undefined}
         aria-label={fullscreen.immersive ? "Fullscreen player" : undefined}
@@ -115,6 +126,8 @@ export default function RoomView({ roomId, clientId, role }: Props) {
             volume={volume}
             onMuted={setMuted}
             onVolume={setVolume}
+            fit={fit}
+            onFit={setFit}
           />
         )}
         {fullscreen.immersive && (
