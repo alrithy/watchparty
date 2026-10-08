@@ -3,7 +3,7 @@ import { INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE, describeMediaError } from "@/
 import { Emitter, notAllowed, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
 import { PositionClock } from "@/lib/player/script";
 
-export type PlayerOptions = { controls: boolean };
+export type PlayerOptions = { controls: boolean; onVideoSize?: (width: number, height: number) => void };
 
 /**
  * The HTMLMediaElement surface shared by <video> and the media-element web
@@ -195,6 +195,11 @@ export class MediaElementAdapter implements PlayerAdapter {
   private onMetadata() {
     const el = this.el!;
     this.isReady = true;
+    // The immersive frame must use the encoded picture ratio, not an assumed 16:9.
+    // Web components that expose videoWidth/videoHeight work here too.
+    if ((el.videoWidth ?? 0) > 0 && (el.videoHeight ?? 0) > 0) {
+      this.opts.onVideoSize?.(el.videoWidth!, el.videoHeight!);
+    }
     // Some codecs (e.g. HEVC in Chrome) load audio but no picture.
     if (
       this.kind === "file" &&
