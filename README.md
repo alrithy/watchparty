@@ -77,6 +77,16 @@ season + episode; otherwise the host picks from the top five. A chosen subtitle
 is shared exactly like an uploaded one, so delay, show/hide and late joiners work
 the same. Search is disabled until at least one provider key is set.
 
+For a TV episode, SubDL is asked for the exact series + season + episode first,
+then for that season's packs (`full_season=1`, `unpack=1`, keeping only the
+requested episode's file), then by the video's file name (only subtitles that name
+the episode). SubDL puts our API key in its download links; the key is stripped
+from every link and added back only on the server when downloading. Provider
+errors are shown as errors, never as "no subtitles". Each search response carries
+`diagnostics` (per query: HTTP status, provider status, error code, counts of
+results, subtitles, accepted and rejected-by-reason; no URLs or keys), and
+`{"diagnose": true}` in the request also runs every fallback query.
+
 The Milestone 3 Host Real-Debrid code (`lib/realdebrid/`, `POST /api/resolve`) is
 kept isolated but is not part of the UI; it does nothing unless `REAL_DEBRID_TOKEN` is set.
 

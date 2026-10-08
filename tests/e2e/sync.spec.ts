@@ -930,3 +930,47 @@ test("live: a redirect hop without CORS plays on the final URL and the guest fol
   await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 15_000, intervals: [500] }).toBeLessThan(0.4);
   console.log(`live resolver: seek gap ${(await gap(host, guest)).toFixed(3)}s`);
 });
+
+/**
+ * Deployed runs with SubDL configured (E2E_SUBDL=1): the real search for a sanitized episode file
+ * name finds real Arabic subtitles, applies one for the right episode, and guests get it.
+ */
+test("live: Find Arabic subtitles for Silo S03E01 applies a real SubDL subtitle for that episode", async ({ browser, context }) => {
+  test.skip(!process.env.E2E_BASE_URL || !process.env.E2E_SUBDL, "needs a deployed run with SubDL configured");
+  type Found = { autoSelect: boolean; results: { release: string; confidence: string; feature: { season: number | null; episode: number | null } }[]; errors: unknown[] };
+  const host = await context.newPage();
+  const roomUrl = await hostRoom(host, "/__test__/Silo%20S03E01.mp4");
+  const guest = await guestPage(browser, context);
+  await guest.goto(roomUrl);
+  await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+  await act(host, { seek: 13.2 });
+
+  const searched = host.waitForResponse((r) => r.url().endsWith("/api/subtitles/search"));
+  await host.getByTestId("subtitle-find").click();
+  const found = (await (await searched).json()) as Found;
+  console.log(`live SubDL: ${found.results.length} results, auto ${found.autoSelect}, errors ${JSON.stringify(found.errors)}`);
+  expect(found.errors).toEqual([]);
+  expect(found.results.length).toBeGreaterThan(0);
+  // Every offered subtitle, and so the one applied automatically, is for S03E01.
+  for (const r of found.results) expect([r.feature.season, r.feature.episode]).toEqual([3, 1]);
+  expect(found.autoSelect).toBe(true);
+
+  // The first cue of the episode (00:00:12,804 --> 00:00:13,805) shows for both.
+  for (const page of [host, guest]) {
+    await expect(page.getByTestId("subtitle-name")).toHaveText(found.results[0].release, { timeout: 15_000 });
+    await expect(page.getByTestId("subtitle-text")).toContainText("فيتاميناتك", { timeout: 15_000 });
+  }
+
+  // The shared delay moves it for everyone: +0.5s, and the cue now covers 13.9s.
+  await host.getByTestId("subtitle-later").click();
+  await expect(guest.getByTestId("subtitle-offset")).toHaveText("+0.5s");
+  await act(host, { seek: 13.9 });
+  await expect(guest.getByTestId("subtitle-text")).toContainText("فيتاميناتك", { timeout: 10_000 });
+
+  // Another episode's search never offers S03E01.
+  const other = (await (
+    await host.request.post("/api/subtitles/search", { data: { kind: "file", url: "https://cdn.example/d/Silo%20S03E02.mp4" } })
+  ).json()) as Found;
+  console.log(`live SubDL S03E02: ${other.results.length} results`);
+  for (const r of other.results) expect([r.feature.season, r.feature.episode]).toEqual([3, 2]);
+});
