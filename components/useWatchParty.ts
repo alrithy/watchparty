@@ -66,6 +66,8 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
   // RoomView only renders in the browser, so reading sessionStorage here is safe.
   const [restored] = useState(() => (isHost ? loadHostSession(roomId) : null));
   const [media, setMedia] = useState<MediaSource | null>(restored?.media ?? null);
+  // Intrinsic video dimensions for immersive layout; reset between different sources.
+  const [videoSize, setVideoSize] = useState({ width: 16, height: 9 });
   const [playback, setPlayback] = useState<PlaybackState | null>(restored?.state ?? null);
   const [settings, setSettings] = useState<RoomSettings>(restored?.settings ?? { pauseOnBuffer: false });
   const [subtitles, setSubtitlesState] = useState<SubtitleTrack | null>(restored?.subtitles ?? null);
@@ -342,7 +344,15 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
       updateStatus("idle");
       return;
     }
-    const p = createPlayer(source, stage, { controls: isHost });
+    setVideoSize({ width: 16, height: 9 });
+    const p = createPlayer(source, stage, {
+      controls: isHost,
+      onVideoSize: (width, height) => {
+        if (width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height)) {
+          setVideoSize((prev) => prev.width === width && prev.height === height ? prev : { width, height });
+        }
+      },
+    });
     playerRef.current = p;
     playPendingRef.current = false;
 
@@ -536,6 +546,7 @@ export function useWatchParty({ roomId, clientId, role, stageRef }: Options) {
 
   return {
     media,
+    videoSize,
     playback,
     settings,
     participants,
