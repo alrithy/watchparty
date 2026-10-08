@@ -897,6 +897,43 @@ for (const clip of [CLIP, "/__test__/clip.mkv"]) {
   });
 }
 
+// A 2.40:1 movie must fill the available iPhone width. Previously it was
+// constrained to a 16:9 wrapper, creating simultaneous side/top black bars.
+for (const clip of ["/__test__/wide.mp4", "/__test__/wide.mkv"]) {
+  test(`iPhone cinematic layout follows actual ${clip.endsWith(".mkv") ? "Movi" : "video"} aspect ratio`, async ({ browser }) => {
+    const ctx = await iPhoneContext(browser);
+    const host = await ctx.newPage();
+    await hostRoom(host, clip);
+    await host.getByTestId("subtitle-file").setInputFiles({
+      name: "arabic.srt",
+      mimeType: "application/x-subrip",
+      buffer: Buffer.from(SRT),
+    });
+    await act(host, { seek: 2 });
+    await tapFullscreen(host);
+    const frame = host.getByTestId("frame");
+    const check = async (width: number, height: number) => {
+      await expect.poll(async () => (await frame.boundingBox())?.width ?? 0).toBeGreaterThan(width - 4);
+      const rect = (await frame.boundingBox())!;
+      expect(rect.width).toBeLessThanOrEqual(width + 1);
+      expect(rect.height).toBeCloseTo(rect.width / 2.4, 0);
+      expect(rect.height).toBeLessThanOrEqual(height);
+      await expect(host.getByTestId("subtitle-text").locator("p")).toHaveText(
+        "مرحبا بكم في الحفلة", { timeout: 10000 }
+      );
+      const subs = await box(host, "subtitle-text");
+      expect(subs.y).toBeGreaterThanOrEqual(rect.y);
+      expect(subs.y + subs.height).toBeLessThanOrEqual(rect.y + rect.height + 1);
+    };
+    await check(844, 390);
+    await host.setViewportSize({ width: 390, height: 844 });
+    await check(390, 844);
+    await host.getByTestId("exit-fullscreen").click();
+    await expect(host.getByTestId("screen")).not.toHaveAttribute("data-immersive");
+    await ctx.close();
+  });
+}
+
 test("iPhone: the video's own fullscreen button lands in the app's fullscreen instead", async ({ browser }) => {
   const ctx = await iPhoneContext(browser);
   const host = await ctx.newPage();
