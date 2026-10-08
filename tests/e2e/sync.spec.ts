@@ -774,6 +774,31 @@ test("Movi failures say why: blocked byte-range access, or a missing file", asyn
   await expect(page.getByTestId("media-error")).toHaveText("The video link wasn't found. It may have expired.", { timeout: 30_000 });
 });
 
+test("playback details name the engine, why it was picked, and failure codes, without the link", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("create-room").click();
+  await page.waitForURL(/\/room\//);
+  const diag = page.getByTestId("playback-diagnostics");
+  const report = () => page.evaluate(() => JSON.stringify((window as unknown as { __watchparty: { diagnostics(): unknown } }).__watchparty.diagnostics()));
+
+  // Chromium has no WebKit HLS player, so hls.js plays HLS here (Safari would get its own player first).
+  await paste(page, "/__test__/hls/index.m3u8?token=SECRET");
+  await expect(page.getByTestId("diag-engine")).toHaveAttribute("data-engine", "hlsjs", { timeout: 20_000 });
+  await diag.locator("summary").click();
+  await expect(page.getByTestId("diag-reasons")).toContainText("hls.js on Media Source Extensions");
+  await expect(page.getByTestId("diag-attempts")).toContainText(/hls\.js: (ready|playing)/, { timeout: 20_000 });
+
+  await paste(page, "/__test__/clip.mkv?sig=SECRET");
+  await expect(page.getByTestId("diag-engine")).toHaveAttribute("data-engine", "movi", { timeout: 30_000 });
+  await expect(page.getByTestId("diag-attempts")).toContainText(/Movi decoder: (ready|playing).*320×180 matroska/, { timeout: 30_000 });
+
+  await paste(page, "/__test__/missing.mkv?sig=SECRET");
+  await expect(page.getByTestId("diag-engine")).toContainText("EXPIRED_OR_UNAUTHORIZED", { timeout: 30_000 });
+  const text = await report();
+  expect(text).toContain('"extension":"mkv"');
+  expect(text).not.toMatch(/SECRET|missing|__test__/);
+});
+
 /**
  * A debrid-style link on another origin: /hop/<file> answers 302 without CORS headers and
  * points at /cors/<file> (CORS + Range) or, for /hop-nocors/<file>, at /nocors/<file> (Range only).

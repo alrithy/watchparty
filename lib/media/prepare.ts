@@ -2,7 +2,7 @@ import type { MediaSource } from "@/lib/room/types";
 import { NOT_DIRECT_MESSAGE, resolveSource } from "@/lib/media/source";
 
 type ProbeResponse =
-  | { result: "playable"; kind: MediaSource["kind"]; filename?: string }
+  | { result: "playable"; kind: MediaSource["kind"]; filename?: string; contentType?: string }
   | { result: "not_media" }
   | { result: "unknown" };
 
@@ -31,6 +31,7 @@ export async function prepareSource(input: string): Promise<{ source: MediaSourc
           ...resolved.source,
           kind: probe.kind,
           ...(probe.filename ? { label: `${probe.filename} (${host})` } : {}),
+          ...(probe.contentType ? { mime: probe.contentType } : {}),
         },
       };
     }

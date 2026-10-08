@@ -7,6 +7,7 @@ import type { PlayerAdapter } from "@/lib/player/types";
 import { useWatchParty } from "@/components/useWatchParty";
 import { prepareSource } from "@/lib/media/prepare";
 import { SubtitleControls, SubtitleOverlay } from "@/components/Subtitles";
+import { PlaybackDiagnostics } from "@/components/PlaybackDiagnostics";
 
 type Props = { roomId: string; clientId: string; role: Role };
 
@@ -131,6 +132,8 @@ export default function RoomView({ roomId, clientId, role }: Props) {
           <InviteLink roomId={roomId} />
         </Panel>
       </section>
+
+      <PlaybackDiagnostics />
 
     </main>
   );

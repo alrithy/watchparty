@@ -41,6 +41,8 @@ export interface PlayerAdapter {
   isBuffered?(seconds: number): boolean;
   /** Last fatal error, shown to the user. */
   error(): string | null;
+  /** Codec/size facts once ready, for diagnostics (optional). Never contains the URL. */
+  mediaInfo?(): MediaInfoSummary | null;
   /** Small rate nudges for drift correction. Returns false where the provider can't do fine-grained rates. */
   setRate(rate: number): boolean;
   rate(): number;
@@ -50,6 +52,19 @@ export interface PlayerAdapter {
   on(listener: PlayerListener): () => void;
   destroy(): void;
 }
+
+export type MediaInfoSummary = {
+  width: number;
+  height: number;
+  /** Seconds, or NaN. */
+  duration: number;
+  container?: string;
+  videoCodec?: string;
+  audioCodec?: string;
+  audioTracks?: number;
+  /** Adaptive streams: how many quality levels. */
+  renditions?: number;
+};
 
 /** Tiny event hub shared by the adapters. */
 export class Emitter {

@@ -12,6 +12,8 @@ export type MediaSource = {
   videoId?: string;
   /** Vimeo unlisted-video hash (the `h` parameter). */
   hash?: string;
+  /** Media type the server reported for an extensionless link (e.g. "video/x-matroska"); a routing hint. */
+  mime?: string;
 };
 
 /** Authoritative playback state, owned by the host in V1. */

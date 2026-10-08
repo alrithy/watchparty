@@ -4,14 +4,22 @@ import { Emitter, type PlayerAdapter, type PlayerEvent, type PlayerListener } fr
 import { MediaElementAdapter, type PlayerOptions } from "@/lib/player/media-element";
 import { MOVI_INCOMPATIBLE_MESSAGE, MoviPlayerAdapter, RANGE_BLOCKED_MESSAGE } from "@/lib/player/movi";
 import { refineStreamUrl, type Refinement } from "@/lib/media/refine";
+import { classifyFailure, isTerminal } from "@/lib/media/errors";
+import type { DiagnosticsSession } from "@/lib/media/diagnostics";
+import { safeHost } from "@/lib/media/diagnostics";
+import type { Engine as AnyEngine } from "@/lib/media/route";
 
-export type Engine = "native" | "movi";
+/** Engines this player can switch between (the provider iframes have their own adapters). */
+export type Engine = Exclude<AnyEngine, "youtube" | "vimeo">;
 
-/** Whether a failure on `engine` is worth one retry on the other engine. */
+/** Whether a failure on `engine` is worth one retry on the next engine. */
 export function shouldFallBack(engine: Engine, message: string): boolean {
+  if (isTerminal(classifyFailure(engine, message))) return false;
   // <video> said it can't decode this (MEDIA_ERR_SRC_NOT_SUPPORTED / MEDIA_ERR_DECODE / no video track).
+  // A network error from <video> would fail the same way anywhere else.
   if (engine === "native") return message.startsWith(INCOMPATIBLE_MESSAGE);
   // Movi failed for any reason (no WebCodecs, CORS, no Range): <video> needs neither CORS nor Range.
+  // hls.js failed: the browser's own HLS player (where there is one) needs no CORS either.
   return true;
 }
 
@@ -25,20 +33,31 @@ export function finalMessage(first: { engine: Engine; message: string }, second:
   return second;
 }
 
+export type FallbackOptions = {
+  /** What the room is playing: "file" (native/Movi) or "hls"/"dash" (stream engines). */
+  kind?: SourceKind;
+  /** Where attempts are recorded for the diagnostics panel. */
+  session?: DiagnosticsSession;
+};
+
 /**
- * A direct media file played by <video> or Movi, switching once if the first
- * can't play it. The switch is local to this device: the room's source and
- * revision don't change, so the host can be on Movi while a guest is on <video>.
- * Position, play/pause, volume, mute and rate carry over; the URL is passed
- * through exactly as pasted.
+ * A source played by the engines its plan lists (<video>, Movi, hls.js,
+ * dash.js), switching once if the first can't play it. The switch is local to
+ * this device: the room's source and revision don't change, so the host can be
+ * on Movi while a guest is on <video>, or Safari's own HLS while Chrome uses
+ * hls.js. Position, play/pause, volume, mute and rate carry over; the URL is
+ * passed through exactly as pasted.
  *
  * When Movi is refused byte-range access, the redirect chain is resolved once on
  * the server (headers only, never bytes) and Movi is restarted once on the final
  * URL if this page can read it. That swap is local too and never loops.
  */
 export class FallbackPlayer implements PlayerAdapter {
-  readonly kind: SourceKind = "file";
+  readonly kind: SourceKind;
   private readonly events = new Emitter();
+  private readonly session: DiagnosticsSession | null;
+  /** Index of the engine in use within `order`. */
+  private step = 0;
   private inner!: PlayerAdapter;
   private engine!: Engine;
   private off: (() => void) | null = null;
@@ -59,9 +78,12 @@ export class FallbackPlayer implements PlayerAdapter {
   constructor(
     private readonly container: HTMLElement,
     private readonly opts: PlayerOptions,
-    private readonly order: [Engine, Engine],
+    private readonly order: Engine[],
     private readonly refine: (url: string) => Promise<Refinement | null> = refineStreamUrl,
+    options: FallbackOptions = {},
   ) {
+    this.kind = options.kind ?? "file";
+    this.session = options.session ?? null;
     this.use(order[0]);
   }
 
@@ -79,10 +101,23 @@ export class FallbackPlayer implements PlayerAdapter {
     return this.inner.seekLead;
   }
 
+  private make(engine: Engine): PlayerAdapter {
+    switch (engine) {
+      case "movi":
+        return new MoviPlayerAdapter(this.container, this.opts);
+      case "hlsjs":
+        return new MediaElementAdapter("hls", this.container, this.opts);
+      case "dashjs":
+        return new MediaElementAdapter("dash", this.container, this.opts);
+      default:
+        return new MediaElementAdapter(this.kind === "hls" ? "hls" : "file", this.container, this.opts, true);
+    }
+  }
+
   private use(engine: Engine) {
     this.engine = engine;
-    this.inner =
-      engine === "movi" ? new MoviPlayerAdapter(this.container, this.opts) : new MediaElementAdapter("file", this.container, this.opts);
+    this.inner = this.make(engine);
+    this.session?.attempt(engine);
     this.inner.setRate(1);
     this.off = this.inner.on((e, detail) => this.onInner(e, detail));
   }
@@ -93,22 +128,30 @@ export class FallbackPlayer implements PlayerAdapter {
       const message = detail?.message ?? "Playback failed.";
       if (this.engine === "movi" && message === RANGE_BLOCKED_MESSAGE && !this.refined && this.source) {
         this.refined = true;
+        this.session?.failed("RANGE_UNSUPPORTED", message);
         this.switching = true;
         void this.refineAndRetry(this.source, message);
         return;
       }
-      if (!this.firstFailure && shouldFallBack(this.engine, message)) {
+      const next = this.order[this.step + 1];
+      if (!this.firstFailure && next && shouldFallBack(this.engine, message)) {
         this.firstFailure = { engine: this.engine, message };
+        this.session?.failed(classifyFailure(this.engine, message, this.reason), message);
         this.switching = true;
+        this.step++;
         // Switch after the failing adapter has finished dispatching this event.
-        queueMicrotask(() => this.source && this.switchTo(this.order[1], this.source));
+        queueMicrotask(() => this.source && this.switchTo(next, this.source));
         return;
       }
       const final = this.firstFailure ? finalMessage(this.firstFailure, message) : message;
+      const blamed = final === message ? this.engine : (this.firstFailure?.engine ?? this.engine);
+      this.session?.failed(classifyFailure(blamed, final, this.reason), final);
       this.events.emit("error", { message: final });
       return;
     }
+    if (e === "playing") this.session?.playing();
     if (e === "ready") {
+      this.session?.ready(this.inner.mediaInfo?.());
       if (this.volume !== null) this.inner.setVolume(this.volume);
       if (this.muted !== null) this.inner.setMuted(this.muted);
       const r = this.resume;
@@ -153,6 +196,7 @@ export class FallbackPlayer implements PlayerAdapter {
     }
     if (this.destroyed || source !== this.source) return;
     if (r && "url" in r) {
+      this.session?.resolved(safeHost(r.url), true);
       this.switchTo("movi", { ...source, url: r.url });
       return;
     }

@@ -15,7 +15,7 @@ const ALLOWED_PORTS = new Set(["", "80", "443", "8080", "8443"]);
 
 export type ProbeResult =
   /** A player that should handle it. */
-  | { result: "playable"; kind: SourceKind; filename?: string }
+  | { result: "playable"; kind: SourceKind; filename?: string; contentType?: string }
   /** Definitely a web page or similar, not media. */
   | { result: "not_media" }
   /** Couldn't tell (blocked, auth, timeout...). The browser should just try. */
@@ -39,6 +39,14 @@ function filenameFrom(disposition: string | null): string | undefined {
 
 /** Classifies a response from its headers and (optionally) its first bytes. */
 export function classify(contentType: string | null, disposition: string | null, head?: string): ProbeResult {
+  const result = classifyHeaders(contentType, disposition, head);
+  const type = (contentType ?? "").split(";")[0].trim().toLowerCase();
+  // Only a bare, well-formed media type goes back to the browser (a routing hint, never parameters).
+  if (result.result === "playable" && /^(video|audio|application)\/[a-z0-9.+-]{1,80}$/.test(type)) return { ...result, contentType: type };
+  return result;
+}
+
+function classifyHeaders(contentType: string | null, disposition: string | null, head?: string): ProbeResult {
   const type = (contentType ?? "").split(";")[0].trim().toLowerCase();
   const filename = filenameFrom(disposition);
   const sniff = head?.trimStart() ?? "";

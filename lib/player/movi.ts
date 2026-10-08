@@ -1,7 +1,7 @@
 import type { MoviPlayer, PlayerState } from "movi-player/player";
 import type { MediaSource, SourceKind } from "@/lib/room/types";
 import { INCOMPATIBLE_MESSAGE } from "@/lib/media/source";
-import { Emitter, notAllowed, type PlayerAdapter, type PlayerListener } from "@/lib/player/types";
+import { Emitter, notAllowed, type MediaInfoSummary, type PlayerAdapter, type PlayerListener } from "@/lib/player/types";
 import type { PlayerOptions } from "@/lib/player/media-element";
 
 /**
@@ -301,6 +301,21 @@ export class MoviPlayerAdapter implements PlayerAdapter {
   }
   error() {
     return this.failure;
+  }
+  mediaInfo(): MediaInfoSummary | null {
+    const info = this.isReady ? this.player?.getMediaInfo() : null;
+    if (!info) return null;
+    const video = info.tracks.find((t) => t.type === "video");
+    const audio = info.tracks.filter((t) => t.type === "audio");
+    return {
+      width: video?.width ?? 0,
+      height: video?.height ?? 0,
+      duration: this.duration(),
+      container: info.formatName,
+      ...(video ? { videoCodec: video.codecString || video.codec } : {}),
+      ...(audio[0] ? { audioCodec: audio[0].codecString || audio[0].codec } : {}),
+      audioTracks: audio.length,
+    };
   }
   setRate(rate: number) {
     if (rate === this.currentRate) return true;

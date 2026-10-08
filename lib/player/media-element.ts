@@ -1,6 +1,6 @@
 import type { MediaSource, SourceKind } from "@/lib/room/types";
-import { INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE, describeMediaError } from "@/lib/media/source";
-import { Emitter, notAllowed, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
+import { DRM_MESSAGE, INCOMPATIBLE_MESSAGE, NOT_DIRECT_MESSAGE, describeMediaError } from "@/lib/media/source";
+import { Emitter, notAllowed, type MediaInfoSummary, type PlayerAdapter, type PlayerEvent, type PlayerListener } from "@/lib/player/types";
 import { PositionClock } from "@/lib/player/script";
 
 export type PlayerOptions = { controls: boolean };
@@ -87,6 +87,8 @@ export class MediaElementAdapter implements PlayerAdapter {
     kind: SourceKind,
     container: HTMLElement,
     private readonly opts: PlayerOptions,
+    /** Plain <video> even for HLS: Safari's own HLS player instead of hls.js. */
+    private readonly native = false,
   ) {
     this.kind = kind;
     this.iframe = kind === "youtube";
@@ -102,7 +104,7 @@ export class MediaElementAdapter implements PlayerAdapter {
 
   load(source: MediaSource) {
     this.events.emit("loading");
-    void define(this.kind).then(
+    void (this.native ? Promise.resolve() : define(this.kind)).then(
       () => {
         if (this.destroyed) return;
         this.attach(source);
@@ -112,7 +114,7 @@ export class MediaElementAdapter implements PlayerAdapter {
   }
 
   private attach(source: MediaSource) {
-    const el = document.createElement(TAGS[this.kind as keyof typeof TAGS]) as MediaLike;
+    const el = document.createElement(this.native ? "video" : TAGS[this.kind as keyof typeof TAGS]) as MediaLike;
     if (!this.iframe) el.dataset.testid = "video";
     el.className = "absolute inset-0 block h-full w-full";
     el.controls = this.opts.controls;
@@ -142,7 +144,7 @@ export class MediaElementAdapter implements PlayerAdapter {
         this.fail(this.iframe ? NOT_DIRECT_MESSAGE : describeMediaError(el.error as MediaError | null)),
       ),
       // Encrypted media needs a DRM license we will never have.
-      this.listen("encrypted", () => this.fail(NOT_DIRECT_MESSAGE)),
+      this.listen("encrypted", () => this.fail(DRM_MESSAGE)),
     );
     if (this.iframe) {
       offs.push(
@@ -210,7 +212,7 @@ export class MediaElementAdapter implements PlayerAdapter {
 
   /** hls.js and dash.js report fatal errors on their own instance, not on the element. */
   private watchLibraryErrors() {
-    if (this.kind !== "hls" && this.kind !== "dash") return;
+    if (this.native || (this.kind !== "hls" && this.kind !== "dash")) return;
     const started = performance.now();
     const check = setInterval(() => {
       const api = this.el?.api;
@@ -220,14 +222,14 @@ export class MediaElementAdapter implements PlayerAdapter {
       if (this.kind === "hls") {
         api.on("hlsError", ((_e: unknown, data: { fatal?: boolean; type?: string }) => {
           if (!data?.fatal) return;
-          if (data.type === "keySystemError") this.fail(NOT_DIRECT_MESSAGE);
+          if (data.type === "keySystemError") this.fail(DRM_MESSAGE);
           else if (data.type === "networkError") this.fail("Network error while loading the stream.");
           else this.fail(INCOMPATIBLE_MESSAGE);
         }) as never);
       } else {
         api.on("error", ((e: { error?: { message?: string } }) => {
           const msg = `${e?.error?.message ?? ""}`.toLowerCase();
-          if (/protection|key ?system|license|drm|encrypted/.test(msg)) this.fail(NOT_DIRECT_MESSAGE);
+          if (/protection|key ?system|license|drm|encrypted/.test(msg)) this.fail(DRM_MESSAGE);
           else if (/download|manifest|network|xhr|fetch/.test(msg)) this.fail("Network error while loading the stream.");
           else this.fail(INCOMPATIBLE_MESSAGE);
         }) as never);
@@ -315,6 +317,23 @@ export class MediaElementAdapter implements PlayerAdapter {
   }
   error() {
     return this.failure;
+  }
+  /** What the element knows about the media, for diagnostics. Codecs are only known for hls.js levels. */
+  mediaInfo(): MediaInfoSummary | null {
+    const el = this.el;
+    if (!el || this.iframe || !this.isReady) return null;
+    const audio = (el as unknown as { audioTracks?: { length: number } }).audioTracks;
+    const levels = (el.api as { levels?: { videoCodec?: string; audioCodec?: string }[]; currentLevel?: number } | null | undefined)?.levels;
+    const level = levels?.[Math.max(0, (el.api as { currentLevel?: number }).currentLevel ?? 0)];
+    return {
+      width: el.videoWidth ?? 0,
+      height: el.videoHeight ?? 0,
+      duration: this.duration(),
+      ...(audio ? { audioTracks: audio.length } : {}),
+      ...(level?.videoCodec ? { videoCodec: level.videoCodec } : {}),
+      ...(level?.audioCodec ? { audioCodec: level.audioCodec } : {}),
+      ...(levels ? { renditions: levels.length } : {}),
+    };
   }
   isBuffered(seconds: number) {
     const b = this.el?.buffered;
