@@ -525,11 +525,28 @@ test("switching source types in the same room", async ({ browser, context }) => 
   }
 });
 
+test("a public HTML watch page that declares a video works with a single paste", async ({ browser }) => {
+  const context = await browser.newContext();
+  const host = await context.newPage();
+  await host.goto("/");
+  await host.getByTestId("create-room").click();
+  await host.waitForURL(/\/room\//);
+  await paste(host, "/__test__/public-watch-page.html");
+  await expect(host.getByTestId("source-error")).toHaveCount(0);
+  await expect(host.getByTestId("media-label")).toContainText("clip.mp4");
+  await expect(host.getByTestId("diag-engine")).toHaveAttribute("data-engine", "native", { timeout: 20_000 });
+  await expect(host.getByTestId("diag-attempts")).toContainText(/Browser player: (ready|playing)/, { timeout: 20_000 });
+  const guest = await context.newPage();
+  await guest.goto(host.url());
+  await expect(guest.getByTestId("media-label")).toContainText("clip.mp4", { timeout: 20_000 });
+  await context.close();
+});
+
 test("sources that can't be played directly say so", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("create-room").click();
   await page.waitForURL(/\/room\//);
-  const cant = "This source can't be played directly.";
+  const cant = "No publicly playable video was found at this link. Try copying the video's Share or direct stream URL.";
 
   // A web page, not media. Locally the server probes its own page; deployed, a public one.
   await paste(page, process.env.E2E_BASE_URL ? "https://example.com/" : "/");
