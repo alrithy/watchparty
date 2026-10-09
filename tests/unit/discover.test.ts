@@ -190,10 +190,11 @@ describe("discoverPage", () => {
   it("prefers a rendition at or under 1080p over a 4K original (Wikimedia-style sources)", async () => {
     const s = site({
       [PAGE]: {
-        body: html("<title>Bunny</title>", `<video controls><source src="/orig.webm" type="video/webm" data-width="4000" data-height="2250"><source src="/1080.webm" type="video/webm" data-width="1920" data-height="1080"><source src="/480.webm" type="video/webm" data-height="480"></video>`),
+        body: html("<title>Bunny</title>", `<video controls><source src="/orig.webm" type="video/webm" data-file-width="4000" data-file-height="2250"><source src="/240.webm" type="video/webm" data-height="240"><source src="/360.mov" type="video/quicktime" data-height="360"><source src="/1080.webm" type="video/webm" data-width="1920" data-height="1080"><source src="/480.webm" type="video/webm" data-height="480"></video>`),
       },
     });
-    const p = prober({ "https://news.example/orig.webm": mp4, "https://news.example/1080.webm": mp4, "https://news.example/480.webm": mp4 });
+    const all = ["orig.webm", "240.webm", "360.mov", "1080.webm", "480.webm"].map((f) => `https://news.example/${f}`);
+    const p = prober(Object.fromEntries(all.map((u) => [u, mp4])));
     const r = await discoverPage(PAGE, { fetchImpl: s.impl, resolve: pub, probe: p.fn });
     expect(r).toMatchObject({ result: "source", option: { source: { url: "https://news.example/1080.webm" } } });
   });

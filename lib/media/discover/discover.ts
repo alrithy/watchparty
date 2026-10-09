@@ -202,6 +202,15 @@ async function viaOembed(endpoints: string[], opts: DiscoverOptions, signal: Abo
   return null;
 }
 
+/**
+ * Among renditions of one video the biggest isn't the best: a 4K original stalls phones. When the
+ * page says how tall each is, prefer the tallest at or under 1080p (worth less than any via weight).
+ */
+function renditionScore(c: RawCandidate): number {
+  if (!c.height) return 0;
+  return c.height > 1080 ? -8 : (3 * c.height) / 1080;
+}
+
 const VIA_WEIGHT: Record<RawCandidate["via"], number> = { jsonld: 50, opengraph: 40, twitter: 35, oembed: 30, "video-tag": 20, iframe: 10 };
 
 function kindFor(url: string, type: string | undefined, probed?: SourceKind): SourceKind {
@@ -267,9 +276,7 @@ export function choose(
     seenUrls.add(c.url);
     let score = VIA_WEIGHT[c.via] + (option.verified ? 20 : 0) + (page.videoPage ? 5 : 0);
     if (c.via === "video-tag") score += videoElements.size === 1 ? 10 : -10;
-    // Among renditions of one video, the biggest isn't the best: a 4K original stalls phones.
-    // Prefer one at or under 1080p when the page says how big each is (ties keep page order).
-    if (c.height && c.height > 1080) score -= 8;
+    score += renditionScore(c);
     scored.push({ ...option, score, identity: identity(c) });
   }
 
@@ -341,7 +348,7 @@ export async function discoverPage(input: string, opts: DiscoverOptions = {}): P
   // Verify media candidates with the header probe (strongest first, a few at a time).
   const media = candidates
     .filter((c) => c.role === "media" && !c.background)
-    .sort((a, b) => VIA_WEIGHT[b.via] - VIA_WEIGHT[a.via])
+    .sort((a, b) => VIA_WEIGHT[b.via] + renditionScore(b) - (VIA_WEIGHT[a.via] + renditionScore(a)))
     .filter((c, i, list) => list.findIndex((x) => x.url === c.url) === i)
     .slice(0, MAX_VERIFY);
   const probe = opts.probe ?? probeUrl;

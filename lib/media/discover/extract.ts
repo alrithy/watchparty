@@ -225,8 +225,8 @@ export function extractPage(html: string, pageUrl: string): PageMetadata {
               const src = absolute(attrs.src, base);
               video.sources++;
               // Wikimedia and others label each rendition's size (data-width/height, or res="720").
-              const width = toInt(attrs["data-width"]) ?? toInt(attrs.width) ?? video.width;
-              const height = toInt(attrs["data-height"]) ?? toInt(attrs.height) ?? toInt(attrs.res) ?? toInt(attrs.size) ?? video.height;
+              const width = toInt(attrs["data-width"]) ?? toInt(attrs["data-file-width"]) ?? toInt(attrs.width) ?? video.width;
+              const height = toInt(attrs["data-height"]) ?? toInt(attrs["data-file-height"]) ?? toInt(attrs.height) ?? toInt(attrs.res) ?? toInt(attrs.size) ?? video.height;
               if (src) push({ url: src, via: "video-tag", role: "media", type: attrs.type?.split(";")[0].trim().toLowerCase(), width, height, background: video.background, group: `video:${videoIndex}` });
             }
             break;
