@@ -1,7 +1,7 @@
 import type { MediaSource, SourceKind } from "@/lib/room/types";
 
 export const INCOMPATIBLE_MESSAGE = "This source is not browser compatible.";
-export const NOT_DIRECT_MESSAGE = "This source can't be played directly.";
+export const NOT_DIRECT_MESSAGE = "No publicly playable video was found at this link. Try copying the video's Share or direct stream URL.";
 export const STREAM_START_TIMEOUT_MESSAGE = "The stream didn't start loading.";
 export const DRM_MESSAGE = "This video is DRM-protected, so Watch Party can't play it.";
 

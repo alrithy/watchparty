@@ -2,6 +2,7 @@ import "server-only";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { SourceKind } from "@/lib/room/types";
+import { publicPageCandidates, guessedMediaKind } from "@/lib/media/public-page";
 
 /**
  * Lightweight server-side check for URLs whose path gives no hint (e.g. CDN
@@ -11,11 +12,13 @@ import type { SourceKind } from "@/lib/room/types";
 const TIMEOUT_MS = 6000;
 export const MAX_REDIRECTS = 5;
 const SNIFF_BYTES = 2048;
+const PAGE_BYTES = 96 * 1024;
+const MAX_PAGE_CANDIDATES = 5;
 const ALLOWED_PORTS = new Set(["", "80", "443", "8080", "8443"]);
 
 export type ProbeResult =
   /** A player that should handle it. */
-  | { result: "playable"; kind: SourceKind; filename?: string; contentType?: string }
+  | { result: "playable"; kind: SourceKind; filename?: string; contentType?: string; mediaUrl?: string }
   /** Definitely a web page or similar, not media. */
   | { result: "not_media" }
   /** Couldn't tell (blocked, auth, timeout...). The browser should just try. */
@@ -126,6 +129,72 @@ async function readHead(res: Response): Promise<string> {
   return new TextDecoder().decode(out.subarray(0, SNIFF_BYTES));
 }
 
+/**
+ * A public HTML page is a useful media hint if it explicitly declares a video
+ * or a supported provider iframe. Never execute scripts or proxy video bytes.
+ * The candidates are untrusted and each external URL must pass SSRF checks.
+ */
+async function pageResult(res: Response, original: URL, opts: ProbeOptions, signal: AbortSignal): Promise<ProbeResult> {
+  const reader = res.body?.getReader();
+  if (!reader) return { result: "not_media" };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < PAGE_BYTES) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+  const body = new Uint8Array(Math.min(total, PAGE_BYTES));
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= body.length) break;
+    const part = chunk.subarray(0, body.length - offset);
+    body.set(part, offset);
+    offset += part.length;
+  }
+  const html = new TextDecoder().decode(body);
+  // res.url is the actual final URL after manual redirect resolution, if known.
+  // It matters for relative <video src> and OG references.
+  const base = res.url || original.href;
+  const candidates = publicPageCandidates(html, base);
+  for (const candidate of candidates.slice(0, MAX_PAGE_CANDIDATES)) {
+    try {
+      const url = new URL(candidate);
+      const kind = guessedMediaKind(candidate);
+      // Official provider iframe identity is handled by the existing adapters.
+      if (kind === "youtube" || kind === "vimeo") {
+        return { result: "playable", kind, mediaUrl: candidate };
+      }
+      if (!(await assertPublic(url, opts))) continue;
+      const head = await request(url, "HEAD", opts, signal);
+      if (head) {
+        void head.body?.cancel().catch(() => {});
+        if (head.ok) {
+          const detected = classify(head.headers.get("content-type"), head.headers.get("content-disposition"));
+          if (detected.result === "not_media") continue;
+          if (detected.result === "playable") return { ...detected, mediaUrl: candidate };
+        } else if (head.status !== 405 && head.status !== 501) {
+          // 4xx/5xx often signal expired URLs or access restrictions; a
+          // known media extension might still play directly from the phone.
+          // Don't claim that unverified URL is valid.
+          continue;
+        }
+      }
+      // Some CDNs block HEAD; a clearly media-specific URL is still worth a
+      // normal client player attempt. An extensionless URL requires verification.
+      if (kind === "file" || kind === "hls" || kind === "dash") {
+        return { result: "playable", kind, mediaUrl: candidate };
+      }
+    } catch { /* Continue to the next declared candidate. */ }
+  }
+  return { result: "not_media" };
+}
+
 /** Follows redirects manually so every hop is checked against private addresses. */
 async function request(start: URL, method: "HEAD" | "GET", opts: ProbeOptions, signal: AbortSignal, ranged = true) {
   let url = start;
@@ -161,22 +230,41 @@ export async function probeUrl(input: string, opts: ProbeOptions = {}): Promise<
     const head = await request(url, "HEAD", opts, signal);
     // null: a hop was refused by the address guard (or too many redirects).
     if (!head) return { result: "unknown" };
+    let htmlHead = false;
     if (head.ok) {
       void head.body?.cancel().catch(() => {});
-      const c = classify(head.headers.get("content-type"), head.headers.get("content-disposition"));
-      if (c.result !== "unknown") return c;
+      const type = head.headers.get("content-type") ?? "";
+      const c = classify(type, head.headers.get("content-disposition"));
+      if (c.result === "playable") return c;
+      htmlHead = /^text\/html|^application\/xhtml\+xml/i.test(type);
+      if (c.result === "not_media" && !htmlHead) return c;
     } else {
       void head.body?.cancel().catch(() => {});
     }
-    // HEAD refused or inconclusive: ask for the first few KB only.
-    const get = await request(url, "GET", opts, signal);
+    // Existing media sniff remains an inexpensive 2 KB Range GET. Only HTML
+    // needs a longer bounded read to discover metadata beyond the first 2 KB.
+    const get = await request(url, "GET", opts, signal, !htmlHead);
     if (!get) return { result: "unknown" };
     if (!get.ok) {
       void get.body?.cancel().catch(() => {});
       return { result: "unknown" };
     }
+    const type = get.headers.get("content-type");
+    if (/^text\/html|^application\/xhtml\+xml/i.test(type ?? "")) {
+      if (htmlHead) return pageResult(get, url, opts, signal);
+      // HEAD denied / lied about type. A short ranged HTML response may be
+      // truncated; refetch it without Range to inspect up to 96 KB.
+      void get.body?.cancel().catch(() => {});
+      const full = await request(url, "GET", opts, signal, false);
+      if (!full) return { result: "unknown" };
+      if (!full.ok) {
+        void full.body?.cancel().catch(() => {});
+        return { result: "unknown" };
+      }
+      return pageResult(full, url, opts, signal);
+    }
     const sniff = await readHead(get);
-    return classify(get.headers.get("content-type"), get.headers.get("content-disposition"), sniff);
+    return classify(type, get.headers.get("content-disposition"), sniff);
   } catch {
     return { result: "unknown" };
   }
