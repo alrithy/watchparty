@@ -230,24 +230,39 @@ export async function probeUrl(input: string, opts: ProbeOptions = {}): Promise<
     const head = await request(url, "HEAD", opts, signal);
     // null: a hop was refused by the address guard (or too many redirects).
     if (!head) return { result: "unknown" };
+    let htmlHead = false;
     if (head.ok) {
       void head.body?.cancel().catch(() => {});
-      const c = classify(head.headers.get("content-type"), head.headers.get("content-disposition"));
+      const type = head.headers.get("content-type") ?? "";
+      const c = classify(type, head.headers.get("content-disposition"));
       if (c.result === "playable") return c;
-      if (c.result === "not_media" && !/^text\/html|^application\/xhtml\+xml/i.test(head.headers.get("content-type") ?? "")) return c;
+      htmlHead = /^text\/html|^application\/xhtml\+xml/i.test(type);
+      if (c.result === "not_media" && !htmlHead) return c;
     } else {
       void head.body?.cancel().catch(() => {});
     }
-    // Don't use a 2 KB Range cap for HTML: Open Graph/VideoObject metadata
-    // may appear later in <head>. Read at most 96 KB, then cancel the response.
-    const get = await request(url, "GET", opts, signal, false);
+    // Existing media sniff remains an inexpensive 2 KB Range GET. Only HTML
+    // needs a longer bounded read to discover metadata beyond the first 2 KB.
+    const get = await request(url, "GET", opts, signal, !htmlHead);
     if (!get) return { result: "unknown" };
     if (!get.ok) {
       void get.body?.cancel().catch(() => {});
       return { result: "unknown" };
     }
     const type = get.headers.get("content-type");
-    if (/^text\/html|^application\/xhtml\+xml/i.test(type ?? "")) return pageResult(get, url, opts, signal);
+    if (/^text\/html|^application\/xhtml\+xml/i.test(type ?? "")) {
+      if (htmlHead) return pageResult(get, url, opts, signal);
+      // HEAD denied / lied about type. A short ranged HTML response may be
+      // truncated; refetch it without Range to inspect up to 96 KB.
+      void get.body?.cancel().catch(() => {});
+      const full = await request(url, "GET", opts, signal, false);
+      if (!full) return { result: "unknown" };
+      if (!full.ok) {
+        void full.body?.cancel().catch(() => {});
+        return { result: "unknown" };
+      }
+      return pageResult(full, url, opts, signal);
+    }
     const sniff = await readHead(get);
     return classify(type, get.headers.get("content-disposition"), sniff);
   } catch {
