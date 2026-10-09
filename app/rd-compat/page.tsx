@@ -14,6 +14,7 @@ type SafeMediaState = {
 };
 const endpoint = "/api/rd/compat";
 const STARTUP_TIMEOUT_MS = 20000;
+const APPLE_CONTROL_HLS = "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8";
 const initialState: SafeMediaState = {
   readyState: 0, networkState: 0, width: 0, height: 0,
   duration: null, position: 0, errorCode: null,
@@ -49,6 +50,7 @@ function mediaError(code: number | null): string {
 export default function RdCompatibilityLab() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const startedAt = useRef(0);
+  const hasStartedPlayback = useRef(false);
   const [token, setToken] = useState("");
   const [downloads, setDownloads] = useState<Download[]>([]);
   const [id, setId] = useState("");
@@ -75,10 +77,10 @@ export default function RdCompatibilityLab() {
       setStats(safeMediaState(video));
       // Safari can sit on a black element without emitting an 'error'.
       // Mark that as a timeout rather than incorrectly claiming unsupported codec/CORS.
-      if (seconds * 1000 >= STARTUP_TIMEOUT_MS && video.readyState < 2 && video.paused) {
+      if (seconds * 1000 >= STARTUP_TIMEOUT_MS && !hasStartedPlayback.current) {
         setPhase((current) => {
           if (current === "loading" || current === "waiting" || current === "metadata") {
-            setDetails("START_TIMEOUT: Safari has not produced a playable frame after 20 seconds. Try another quality or inspect the RD account/CDN.");
+            setDetails("START_TIMEOUT: Safari has not entered playback after 20 seconds. Check readyState / networkState; the RD stream or device may be at fault.");
             return "stalled";
           }
           return current;
@@ -96,6 +98,7 @@ export default function RdCompatibilityLab() {
       video.load();
     }
     startedAt.current = 0;
+    hasStartedPlayback.current = false;
     setSelectedQuality(null);
     setPhase("idle");
     setDetails("");
@@ -147,10 +150,12 @@ export default function RdCompatibilityLab() {
     setElapsed(0);
     setStats(initialState);
     startedAt.current = eventTimestamp;
+    hasStartedPlayback.current = false;
     video.src = providerUrl;
     video.load();
     // Must occur synchronously inside the quality-button's user gesture.
     void video.play().then(() => {
+      hasStartedPlayback.current = true;
       setPhase("playing");
       setDetails("Safari accepted play() and started playback.");
       setStats(safeMediaState(video));
@@ -177,7 +182,9 @@ export default function RdCompatibilityLab() {
     setDetails("User-initiated playback retry.");
     setPhase("loading");
     startedAt.current = eventTimestamp;
+    hasStartedPlayback.current = false;
     void video.play().then(() => {
+      hasStartedPlayback.current = true;
       setPhase("playing");
       setDetails("Safari accepted play() and started playback.");
       setStats(safeMediaState(video));
@@ -231,6 +238,7 @@ export default function RdCompatibilityLab() {
         <p className="text-sm text-zinc-400">Provider duration: {result.durationSeconds === null ? "Unknown — cannot verify timeline" : `${result.durationSeconds.toFixed(1)} seconds`}. The original and HLS timelines must match before room synchronization.</p>
         <div className="flex flex-wrap gap-2">
           {result.variants.map((v, i) => <button key={i} className="rounded border border-zinc-500 px-3 py-2 text-sm" onClick={event => playVideo(v.quality, v.url, event.timeStamp)}>Play {v.quality}</button>)}
+          <button data-testid="apple-control-hls" className="rounded border border-sky-500 px-3 py-2 text-sm" onClick={event => playVideo("Apple HLS control", APPLE_CONTROL_HLS, event.timeStamp)}>Test Apple HLS (control)</button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button disabled={!selectedQuality} onClick={event => retry(event.timeStamp)} className="rounded bg-zinc-100 px-3 py-2 text-sm text-zinc-950 disabled:opacity-50">Start / Retry playback</button>
@@ -253,7 +261,7 @@ export default function RdCompatibilityLab() {
           onLoadStart={() => { setPhase("loading"); updateMedia(); }}
           onLoadedMetadata={() => { setPhase("metadata"); setDetails("Safari loaded media metadata."); updateMedia(); }}
           onCanPlay={() => { updateMedia(); }}
-          onPlaying={() => { setPhase("playing"); setDetails("Safari is rendering playback."); updateMedia(); }}
+          onPlaying={() => { hasStartedPlayback.current = true; setPhase("playing"); setDetails("Safari is rendering playback."); updateMedia(); }}
           onWaiting={() => { setPhase("waiting"); setDetails("BUFFERING: Waiting for media data from the provider."); updateMedia(); }}
           onStalled={() => { setPhase("stalled"); setDetails("STREAM_STALLED: The provider has not supplied more media data."); updateMedia(); }}
           onPause={() => { setPhase(current => current === "playing" ? "paused" : current); updateMedia(); }}
