@@ -187,6 +187,17 @@ describe("discoverPage", () => {
     expect(p.seen).not.toContain("https://news.example/bg.mp4");
   });
 
+  it("prefers a rendition at or under 1080p over a 4K original (Wikimedia-style sources)", async () => {
+    const s = site({
+      [PAGE]: {
+        body: html("<title>Bunny</title>", `<video controls><source src="/orig.webm" type="video/webm" data-width="4000" data-height="2250"><source src="/1080.webm" type="video/webm" data-width="1920" data-height="1080"><source src="/480.webm" type="video/webm" data-height="480"></video>`),
+      },
+    });
+    const p = prober({ "https://news.example/orig.webm": mp4, "https://news.example/1080.webm": mp4, "https://news.example/480.webm": mp4 });
+    const r = await discoverPage(PAGE, { fetchImpl: s.impl, resolve: pub, probe: p.fn });
+    expect(r).toMatchObject({ result: "source", option: { source: { url: "https://news.example/1080.webm" } } });
+  });
+
   it("lists several JSON-LD VideoObjects with different names separately", async () => {
     const ld = [
       { "@type": "VideoObject", name: "Part 1", contentUrl: "https://cdn.example/1.mp4" },

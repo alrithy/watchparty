@@ -267,6 +267,9 @@ export function choose(
     seenUrls.add(c.url);
     let score = VIA_WEIGHT[c.via] + (option.verified ? 20 : 0) + (page.videoPage ? 5 : 0);
     if (c.via === "video-tag") score += videoElements.size === 1 ? 10 : -10;
+    // Among renditions of one video, the biggest isn't the best: a 4K original stalls phones.
+    // Prefer one at or under 1080p when the page says how big each is (ties keep page order).
+    if (c.height && c.height > 1080) score -= 8;
     scored.push({ ...option, score, identity: identity(c) });
   }
 

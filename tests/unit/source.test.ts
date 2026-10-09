@@ -180,3 +180,11 @@ describe("decideCorrection when the target is buffered", () => {
     expect(decideCorrection(0.6, false, 500, true, true).action).toBe("rate");
   });
 });
+
+describe("MediaWiki file pages", () => {
+  it("are not mistaken for direct files despite the extension", () => {
+    const r = resolveSource("https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm");
+    expect(r.ok && r.certain).toBe(false);
+    expect(resolveSource("https://upload.wikimedia.org/wikipedia/commons/c/c0/Big_Buck_Bunny_4K.webm")).toMatchObject({ ok: true, certain: true });
+  });
+});

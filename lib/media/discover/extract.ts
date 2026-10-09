@@ -224,7 +224,10 @@ export function extractPage(html: string, pageUrl: string): PageMetadata {
             if (video) {
               const src = absolute(attrs.src, base);
               video.sources++;
-              if (src) push({ url: src, via: "video-tag", role: "media", type: attrs.type?.split(";")[0].trim().toLowerCase(), width: video.width, height: video.height, background: video.background, group: `video:${videoIndex}` });
+              // Wikimedia and others label each rendition's size (data-width/height, or res="720").
+              const width = toInt(attrs["data-width"]) ?? toInt(attrs.width) ?? video.width;
+              const height = toInt(attrs["data-height"]) ?? toInt(attrs.height) ?? toInt(attrs.res) ?? toInt(attrs.size) ?? video.height;
+              if (src) push({ url: src, via: "video-tag", role: "media", type: attrs.type?.split(";")[0].trim().toLowerCase(), width, height, background: video.background, group: `video:${videoIndex}` });
             }
             break;
           case "iframe": {

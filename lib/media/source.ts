@@ -135,7 +135,10 @@ export function resolveSource(input: string): Resolved {
   }
 
   const kind = kindFromPath(url.pathname);
-  return { ok: true, certain: kind !== null, source: { kind: kind ?? "file", url: href, label: labelFor(href) } };
+  // MediaWiki file pages (commons.wikimedia.org/wiki/File:Clip.webm) end in a media extension but are
+  // HTML pages; the probe sees that and page discovery finds the <video> on them.
+  const wikiPage = /\/wiki\/[^/]+:/.test(url.pathname);
+  return { ok: true, certain: kind !== null && !wikiPage, source: { kind: kind ?? "file", url: href, label: labelFor(href) } };
 }
 
 export function describeMediaError(error: MediaError | null): string {
