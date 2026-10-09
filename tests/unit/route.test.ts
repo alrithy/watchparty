@@ -169,6 +169,17 @@ describe("diagnostics never keep URLs", () => {
     expect(text).not.toMatch(/APIKEY123|SECRET|Silo|resolve\/realdebrid/);
     expect(text).toContain("torrentio.example");
   });
+
+  it("keeps a video found on a page to its host too, signed query and page path dropped", () => {
+    const found = "https://cdn.example/v/private-name.mp4?sig=SIGNED&exp=99";
+    const source = src("file", found, { label: "My Holiday (blog.example)", page: { host: "blog.example", via: "opengraph" } });
+    const s = playbackDiagnostics.begin(source, planPlayback(source, iphone), iphone, "smart");
+    s.attempt("native");
+    s.playing();
+    const text = reportText(playbackDiagnostics.snapshot()!);
+    expect(text).not.toMatch(/SIGNED|exp=|private-name|Holiday|\/v\//);
+    expect(text).toContain("cdn.example");
+  });
 });
 
 describe("diagnostics scrub any error text", () => {

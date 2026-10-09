@@ -27,14 +27,22 @@ what the browser receives back. Reference: OWASP SSRF Prevention Cheat Sheet.
 
 ### Residual risks
 
-- The in-memory limiter is per serverless instance. **Production action:** add
-  a Vercel WAF rate-limit rule for `/api/media/*` (e.g. 30/min/IP).
+- The in-memory limiter is per serverless instance, so it is a backstop, not
+  the abuse control. **Production gate (not done yet):** a Vercel Firewall
+  custom rule before PR A reaches Production:
+  - If: request path starts with `/api/media/` **or** equals `/api/probe` or `/api/subtitles`
+  - Then: Rate limit, fixed window 60 s, 30 requests, keyed by IP, action Deny (429)
+  - Verify after: 31 quick POSTs to `/api/media/discover` from one IP get a 429
+    from the platform (response comes from Vercel, not from our route).
+  It changes project-wide traffic, so it is applied only on the owner's go-ahead.
 - The OpenSubtitles download `link` and SubDL/OpenSubtitles API hosts are
   fixed provider endpoints and still use the global fetch (not user input).
 - HTTP (not HTTPS) pages are still fetched; the content is public by
   definition, and the video URL is played by the browser, not the server.
 - Test escape hatch `PROBE_ALLOW_PRIVATE=1` disables the address guard; it
   must never be set on Vercel (it is only set by the local Playwright config).
+  Checked 2026-10-09: the Vercel project has no `PROBE_ALLOW_PRIVATE` variable
+  in Production, Preview or Development.
 
 ## Privacy: what is shared, logged and shown
 
@@ -42,10 +50,12 @@ what the browser receives back. Reference: OWASP SSRF Prevention Cheat Sheet.
   video URL **including any signed query string**, the label (page title or
   file name), and `page.host` + `page.via`. Everyone in the room must be able
   to fetch the video, so a signed stream URL is not secret from the people
-  you invite. It is never put in the invite link.
+  you invite, and Watch Party does not present it as private from them. It
+  is never put in the invite link.
 - **Not shared:** page path/query, page HTML, oEmbed bodies, probe headers.
 - **Logs:** none of these routes log URLs; errors carry codes and fixed
-  sentences only. Diagnostics show host + extension, never URLs.
+  sentences only. Diagnostics show host + extension, never URLs; the copied report is the
+  same (unit test: a page-discovered signed URL leaves no query, path or title).
 - **Error messages** never echo the pasted URL.
 - Real-Debrid tokens are not involved: discovery sends no Authorization
   header to any host, and RD code is untouched.
@@ -55,5 +65,7 @@ what the browser receives back. Reference: OWASP SSRF Prevention Cheat Sheet.
 Discovery reads only what a link-preview unfurler reads (public HTML
 metadata), on an explicit user paste, with an honest User-Agent
 (`WatchPartyLinkCheck/1.0`). It does not log in, send cookies, solve
-challenges, or bypass DRM, paywalls or embed restrictions: 401/403 becomes
-`AUTH_REQUIRED`, DRM services are refused up front.
+challenges, or bypass DRM, paywalls or embed restrictions: 401/407 becomes
+`AUTH_REQUIRED`, 403 becomes `SOURCE_UNAVAILABLE` ("the site refused our
+check", since live tests showed most 403s are bot protection, not a login),
+and DRM services are refused up front.

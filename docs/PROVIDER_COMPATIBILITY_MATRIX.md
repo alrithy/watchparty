@@ -66,6 +66,21 @@ as before (`user-agent: node`, Range, no cookies).
 | og:video text/html YouTube embed | official YouTube player | PASS (with the IFrame API stand-in) |
 | No video / Dailymotion link | specific message | PASS |
 
+## iPhone acceptance (PR A gate, filled in from Hassan's device runs)
+
+Each platform is recorded separately. Check: decoded picture, audible audio,
+pause/resume, seek (3-5 s on Streamable, about 30 s elsewhere), a second device
+following in the room, and reconnect. Failures carry the copied (sanitised)
+diagnostics report.
+
+| Link | iPhone Safari | Home Screen app | Notes |
+| --- | --- | --- | --- |
+| archive.org/details/BigBuckBunny_124 | not run | not run | |
+| ted.com/talks/sir_ken_robinson_do_schools_kill_creativity | not run | not run | |
+| streamable.com/moo | not run | not run | short clip: seek 3-5 s |
+| one Torrentio/RD direct link (owner's own) | not run | not run | link itself not recorded |
+| page-discovered video + Arabic SubDL/OpenSubtitles subtitle, iPhone fullscreen | not run | not run | a missing provider key is tracked separately, not as a discovery failure |
+
 ## Still to certify (needs a person or a device)
 
 - iPhone Safari and the Home Screen app on the Preview: archive.org (MP4),

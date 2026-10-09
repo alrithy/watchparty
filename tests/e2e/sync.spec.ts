@@ -924,17 +924,24 @@ for (const clip of [CLIP, "/__test__/clip.mkv"]) {
     await expect(controls).toHaveCSS("opacity", "1");
 
     // Host controls drive the room: pause, seek past the first cue, play.
-    await controls.getByRole("button", { name: "Pause" }).tap();
+    // While playing the controls fade 3 s after a tap, and a tap on faded controls only brings them
+    // back (as on a phone). A slow runner can pass 3 s here, so reveal first if they faded.
+    const press = (name: string) =>
+      expect(async () => {
+        if ((await controls.getAttribute("data-visible")) === null) await host.getByTestId("frame").tap();
+        await controls.getByRole("button", { name }).tap({ timeout: 1000 });
+      }).toPass({ timeout: 10_000 });
+    await press("Pause");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(true);
     const seek = controls.getByRole("slider", { name: "Seek" });
     await seek.fill("12");
     await seek.blur();
     await expect.poll(async () => (await info(guest)).t, { timeout: 10_000 }).toBeGreaterThan(11.5);
     await expect(host.getByTestId("subtitle-text")).toHaveText("Second line", { timeout: 10_000 });
-    await controls.getByRole("button", { name: "Play" }).tap();
+    await press("Play");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
     // Mute is local only.
-    await controls.getByRole("button", { name: "Mute" }).tap();
+    await press("Mute");
     await expect(controls.getByRole("button", { name: "Unmute" })).toBeVisible();
     await expect(host.getByTestId("fullscreen")).toHaveText("Exit fullscreen");
 
