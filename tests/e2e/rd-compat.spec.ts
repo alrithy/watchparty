@@ -40,7 +40,8 @@ test("RD compatibility lab can discover downloads and select a Safari HLS rendit
   expect(recorded[1].id).toBe("RDABCDEF123");
   await page.getByTestId("apple-control-hls").click();
   await expect(page.locator("video")).toHaveAttribute("src", /devstreaming-cdn\.apple\.com.*master\.m3u8/);
-  await expect(page.getByTestId("rd-playback-diagnostics")).toContainText("Apple HLS control");
+  // Chromium lacks Safari native HLS; verify source selection, not successful decoding.
+  await expect(page.getByText("Quality: Apple HLS control")).toBeVisible();
   await page.getByRole("button", { name: "Clear" }).click();
   await expect(page.getByLabel("Your RD API key (not stored)")).toHaveValue("");
   await expect(page.locator("video")).toHaveCount(0);
