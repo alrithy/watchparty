@@ -11,12 +11,15 @@ async function errorOf(res: Response, fallback: string): Promise<Error> {
   return new Error(body?.error ?? fallback);
 }
 
-/** Asks our server to search the subtitle providers for this video (Arabic by default). */
+/**
+ * Asks our server to search the subtitle providers for this video (Arabic by default).
+ * A video found on a web page has a meaningless file name, so its page title stands in.
+ */
 export async function findArabicSubtitles(media: MediaSource, title?: string): Promise<FoundSubtitles> {
   const res = await fetch("/api/subtitles/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind: media.kind, url: media.url, videoId: media.videoId, title: title || undefined }),
+    body: JSON.stringify({ kind: media.kind, url: media.url, videoId: media.videoId, title: title || (media.page ? media.label : undefined) }),
   });
   if (!res.ok) throw await errorOf(res, "Subtitle search failed.");
   return (await res.json()) as FoundSubtitles;

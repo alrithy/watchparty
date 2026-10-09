@@ -1,5 +1,5 @@
 import "server-only";
-import { assertPublic, MAX_REDIRECTS, type ProbeOptions } from "@/lib/media/probe";
+import { assertPublic, fetcherFor, MAX_REDIRECTS, type ProbeOptions } from "@/lib/media/probe";
 
 /**
  * Follows a media link's redirect chain on the server and returns where it ends,
@@ -55,7 +55,7 @@ export async function resolveStream(input: string, opts: ProbeOptions & { origin
     for (let hop = 0; ; hop++) {
       if (!(await assertPublic(url, opts))) return { ok: false, originalUrl, reason: "blocked" };
       seen.add(url.href);
-      const res = await (opts.fetchImpl ?? fetch)(raw, {
+      const res = await fetcherFor(opts)(raw, {
         method: "GET",
         redirect: "manual",
         signal,

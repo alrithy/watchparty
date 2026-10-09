@@ -106,3 +106,31 @@ packages' own source (not copied):
 
 So Safari (macOS, iOS, Home Screen web apps) now gets a plain `<video>` for
 HLS first, with hls.js as the fallback. See `docs/M4_PLAYBACK_AUDIT.md`.
+
+## Universal Link Playback, PR A (2026-10-09)
+
+Versions and licenses from npm metadata and each repository's README/LICENSE on 2026-10-09.
+
+| Candidate | Version / license | Decision | Evidence |
+| --- | --- | --- | --- |
+| htmlparser2 | 12.0.0, MIT | **USE** (server only) | Streaming tokenizer, no DOM, no script execution; deps entities/domhandler/domutils/domelementtype (~1.1 MB on disk, 0 bytes in the browser bundle). Handles malformed markup (test: "survives malformed HTML"). Already the parser under cheerio and metascraper. |
+| ipaddr.js | 2.5.0, MIT | **USE** (server only) | Range table for IPv4/IPv6 incl. IPv4-mapped, NAT64, 6to4, Teredo; 0 deps, 84 KB. Replaces our hand-written check, which missed `::ffff:7f00:1`. Same library express's proxy-addr uses. |
+| microlinkhq/metascraper (+ metascraper-video) | 5.58.1 / 5.56.2, MIT | **ADAPT rules, REJECT dependency** | Takes `{html, url}` (compatible with our guarded fetch), but `@metascraper/helpers` pulls jsdom 30 and **re2 (native addon)**, lodash, chrono-node etc.: tens of MB server-side and a native build on Vercel. metascraper-video returns one winning URL with no candidate list, no confidence, no verification, so it can't drive "pick when unsure". Its field order (og:video:secure_url → og:video:url → og:video → twitter:player:stream → JSON-LD contentUrl → `<video src>`) is mirrored in `extract.ts`; no code copied. |
+| itteco/iframely | 2.5.0, MIT | **REJECT dependency, ADAPT ideas** | A self-hosted Express gateway (redis/memcached, got, cheerio 0.22, express 4, ~28 direct deps) with its own fetcher, so our SSRF pinning wouldn't cover it; returns provider embed HTML we must not execute. Ideas taken: domain-specific provider list ahead of generic metadata, oEmbed discovery as a separate step. |
+| oEmbed spec (oembed.com) | spec | **USE (restricted)** | Discovery `<link rel="alternate" type="application/json+oembed">` followed only to official endpoints of listed providers; `html` never rendered, only an iframe `src` mapped to an SDK we drive. Arbitrary sites' endpoints (e.g. WordPress `/wp-json/oembed`) return blockquotes/iframes we can't sync, so they aren't fetched. |
+| oembed-providers | 1.0.20260604, MIT | **OPTIONAL (PR B)** | The oembed.com registry as data. Not needed while only YouTube/Vimeo are playable; useful when PR B adds providers. |
+| Open Graph (ogp.me), schema.org VideoObject, Twitter player card | specs | **USE** | Implemented in `extract.ts` (structured `og:video:*` groups, JSON-LD `@graph`/nested `video`, `contentUrl`/`embedUrl`/`duration`/`encodingFormat`). |
+| yt-dlp | Unlicense (source); PyInstaller release binaries GPLv3+ (README: "the combined work is licensed under GPLv3+") | **OPTIONAL, PR D only** | Python, not a player, no browser output guarantee; would need an isolated worker outside Vercel. Not added until real links that A–C can't play are shown to play from its metadata. |
+| streamlink | BSD-2-Clause | **OPTIONAL, later** | Designed to pipe live streams into a local player (VLC); useful only as a live-stream URL resolver in a worker. |
+| imputnet/cobalt | AGPL-3.0 (repo default) | **REJECT (reference only)** | Downloader that "works like a fancy proxy": conflicts with the no-byte-proxy rule; AGPL. Not read for code. |
+| bluenviron/mediamtx | MIT | **REJECT for now** | Separate media server; only if self-hosted restreaming were ever needed. |
+| cookpete/react-player | 3.4.0, MIT | **KEEP current use** (its media elements, not the component) | Unchanged from M3: its URL picker can't classify extensionless or page URLs. |
+| shaka-project/shaka-player | 5.2.12, Apache-2.0 | **REJECT** | Would duplicate hls.js 1.7.3 + dash.js 5.2.1 already in use. Reconsider only for DRM-free DASH edge cases hls/dash.js fail on (none observed). |
+| videojs/video.js | 8.24.1, Apache-2.0 | **REJECT** | UI framework over the same engines; our immersive controls already cover iPhone. |
+| MrUjjwalG/movi-player | 0.4.1, Apache-2.0 | **KEEP** | Unchanged MKV/HEVC fallback. |
+| YouTube IFrame API / Vimeo Player SDK (@vimeo/player 2.30.4, MIT) | official | **KEEP** | Embeds found on pages map onto the existing adapters; no custom extraction from either service. |
+| Dailymotion Player, Twitch Embed, Wistia player (@wistia/wistia-player 0.7.24, MIT), Streamable | official SDKs | **PR B to evaluate** | Recognised and named in errors now; each must prove play/pause/seek/position control before it is listed as playable. |
+
+Added to the browser bundle by PR A: `lib/media/discover/providers.ts` +
+types + the picker (a few KB of our own code). htmlparser2 and ipaddr.js run
+only in route handlers.
