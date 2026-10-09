@@ -45,7 +45,8 @@ export type DiscoveryResult =
   | { result: "choose"; options: DiscoveredOption[] }
   | { result: "unsupported"; code: DiscoveryErrorCode; message: string };
 
-export const DISCOVERY_MESSAGES: Record<DiscoveryErrorCode, string> = {
+export const DISCOVERY_MESSAGES: Record<DiscoveryErrorCode | "REFUSED", string> = {
+  REFUSED: "This site refused Watch Party's link check (it may need a login or block automated requests). Open the video and copy its own link instead.",
   PAGE_NOT_MEDIA: "This page doesn't contain a video Watch Party can find. Try copying the video's own link.",
   NO_EMBED_AVAILABLE: "This page's video is on a site Watch Party can't play in sync yet.",
   PROVIDER_EMBED_BLOCKED: "The video's owner doesn't allow it to be played outside their site.",
@@ -58,6 +59,6 @@ export const DISCOVERY_MESSAGES: Record<DiscoveryErrorCode, string> = {
   RATE_LIMITED: "Too many links checked in a short time. Wait a minute and try again.",
 };
 
-export function unsupported(code: DiscoveryErrorCode, message = DISCOVERY_MESSAGES[code]): DiscoveryResult {
+export function unsupported(code: DiscoveryErrorCode, message: string = DISCOVERY_MESSAGES[code]): DiscoveryResult {
   return { result: "unsupported", code, message };
 }

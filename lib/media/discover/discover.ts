@@ -77,7 +77,10 @@ function isAdOrImage(url: string): boolean {
 }
 
 function statusResult(status: number): DiscoveryResult {
-  if (status === 401 || status === 403 || status === 407) return unsupported("AUTH_REQUIRED");
+  if (status === 401 || status === 407) return unsupported("AUTH_REQUIRED");
+  // Live testing: most 403s on public pages are bot protection (Cloudflare, Akamai) refusing a
+  // datacenter request, not a login wall. We don't try to get around it; we say what happened.
+  if (status === 403) return unsupported("SOURCE_UNAVAILABLE", DISCOVERY_MESSAGES.REFUSED);
   if (status === 404 || status === 410) return unsupported("LINK_EXPIRED");
   return unsupported("SOURCE_UNAVAILABLE");
 }
@@ -298,8 +301,9 @@ export async function discoverPage(input: string, opts: DiscoverOptions = {}): P
 
   // Known services first: no request needed to say what we can't do.
   const known = recognisedProvider(start);
+  // (Providers whose pages carry a direct video are discovered like any page.)
   if (known?.drm) return unsupported("DRM_LICENSE_REQUIRED", `${known.name} videos are DRM-protected, so Watch Party can't play them.`);
-  if (known) return unsupported("NO_EMBED_AVAILABLE", `This video is on ${known.name}, which Watch Party can't play in sync yet.`);
+  if (known && !known.pageHasMedia) return unsupported("NO_EMBED_AVAILABLE", `This video is on ${known.name}, which Watch Party can't play in sync yet.`);
 
   const signal = AbortSignal.timeout(PAGE_TIMEOUT_MS);
   const page = await fetchGuarded(start, "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5", opts, signal);

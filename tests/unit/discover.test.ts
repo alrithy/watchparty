@@ -263,6 +263,13 @@ describe("discoverPage", () => {
     expect(s.calls).toEqual([]);
   });
 
+  it("Streamable pages are still discovered (their og:video is an MP4)", async () => {
+    const page = "https://streamable.com/moo";
+    const s = site({ [page]: { body: html(`<meta property="og:video" content="https://api-f.streamable.com/api/v1/videos/moo/mp4">`) } });
+    const r = await discoverPage(page, { fetchImpl: s.impl, resolve: pub, probe: prober({ "https://api-f.streamable.com/api/v1/videos/moo/mp4": mp4 }).fn });
+    expect(r).toMatchObject({ result: "source", option: { source: { kind: "file", page: { host: "streamable.com" } } } });
+  });
+
   it("names a recognised provider embedded in a page", async () => {
     const s = site({ [PAGE]: { body: html("", `<iframe src="https://www.dailymotion.com/embed/video/x8j5tqk"></iframe>`) } });
     expect(await discoverPage(PAGE, { fetchImpl: s.impl, resolve: pub, probe: prober({}).fn })).toMatchObject({ code: "NO_EMBED_AVAILABLE", message: expect.stringContaining("Dailymotion") });
@@ -270,7 +277,7 @@ describe("discoverPage", () => {
 
   it.each([
     [401, "AUTH_REQUIRED"],
-    [403, "AUTH_REQUIRED"],
+    [403, "SOURCE_UNAVAILABLE"],
     [404, "LINK_EXPIRED"],
     [410, "LINK_EXPIRED"],
     [429, "SOURCE_UNAVAILABLE"],

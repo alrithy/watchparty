@@ -24,6 +24,11 @@ type Provider = {
   oembed?: string;
   /** Subscription services whose video is DRM-protected: no web page can play it outside their app. */
   drm?: boolean;
+  /**
+   * Its pages carry a direct video in standard metadata (Streamable's og:video is an MP4),
+   * so a pasted page is still discovered; only its embeds are named as unsupported.
+   */
+  pageHasMedia?: boolean;
 };
 
 export const PLAYABLE_PROVIDERS: Provider[] = [
@@ -35,7 +40,7 @@ export const RECOGNISED_PROVIDERS: Provider[] = [
   { name: "Dailymotion", hosts: ["dailymotion.com", "dai.ly"], oembed: "https://www.dailymotion.com/services/oembed" },
   { name: "Twitch", hosts: ["twitch.tv"] },
   { name: "Wistia", hosts: ["wistia.com", "wistia.net", "wi.st"], oembed: "https://fast.wistia.com/oembed" },
-  { name: "Streamable", hosts: ["streamable.com"], oembed: "https://api.streamable.com/oembed.json" },
+  { name: "Streamable", hosts: ["streamable.com"], oembed: "https://api.streamable.com/oembed.json", pageHasMedia: true },
   { name: "JW Player", hosts: ["jwplayer.com", "jwplatform.com", "jwpcdn.com"] },
   { name: "Brightcove", hosts: ["brightcove.net", "brightcove.com", "bcove.video"] },
   { name: "Kaltura", hosts: ["kaltura.com"] },
@@ -60,9 +65,9 @@ function onHost(host: string, domains: string[]): boolean {
 }
 
 /** The recognised (not yet playable) provider a URL belongs to. */
-export function recognisedProvider(url: URL): { name: string; drm: boolean } | null {
+export function recognisedProvider(url: URL): { name: string; drm: boolean; pageHasMedia: boolean } | null {
   const p = RECOGNISED_PROVIDERS.find((p) => onHost(url.hostname, p.hosts));
-  return p ? { name: p.name, drm: !!p.drm } : null;
+  return p ? { name: p.name, drm: !!p.drm, pageHasMedia: !!p.pageHasMedia } : null;
 }
 
 /** Whether `endpoint` is one of the official oEmbed endpoints above (exact origin + path). */

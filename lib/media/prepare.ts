@@ -45,7 +45,7 @@ export async function prepareSource(input: string): Promise<Prepared> {
   // Services we know but can't play in sync yet (or that are DRM-only): say so without any request.
   const known = recognisedProvider(new URL(resolved.source.url));
   if (known?.drm) return { error: `${known.name} videos are DRM-protected, so Watch Party can't play them.`, code: "DRM_LICENSE_REQUIRED" };
-  if (known) return { error: `This video is on ${known.name}, which Watch Party can't play in sync yet.`, code: "NO_EMBED_AVAILABLE" };
+  if (known && !known.pageHasMedia) return { error: `This video is on ${known.name}, which Watch Party can't play in sync yet.`, code: "NO_EMBED_AVAILABLE" };
   try {
     const res = await fetch("/api/probe", {
       method: "POST",
