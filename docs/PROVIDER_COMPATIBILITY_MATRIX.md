@@ -16,8 +16,8 @@ Classification: PASS = picture decoded, time advanced and the seek landed. FAIL 
 | Page | Category | Public/signed | Found via → route | Chrome/Linux picture · time · seek | metascraper-video | Result |
 | --- | --- | --- | --- | --- | --- | --- |
 | archive.org/details/BigBuckBunny_124 | Open Graph video page | public | og:video → MP4, native `<video>` | 640×360 · +2.0 s · 33.9 s | same URL | **PASS** (resolved in 2.5 s) |
-| en.wikipedia.org/wiki/Big_Buck_Bunny | `<video>` with renditions | public | `<video>`/`<source>` → WebM, native | 4000×2250 · +1.8 s · 31.0 s (before the ≤1080p rule) | same 4K original | **PASS** on desktop. d0bc80e now prefers ≤1080p; re-check below |
-| commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm | MediaWiki file page | public | before d0bc80e, the `.webm` in the URL sent it to the file player as if direct, and it failed (FINAL_CDN_CORS_BLOCKED) | — | 4K original | **FAIL → fixed in d0bc80e** (now routed to discovery); re-check below |
+| en.wikipedia.org/wiki/Big_Buck_Bunny | `<video>` with renditions | public | `<video>`/`<source>` → 1080p WebM transcode, native | 1920×1080 · first 2 s still buffering (+0 s) · seek 30 s → 33.2 s 4 s later | 4K original | **PASS** on b78042f (before it, picked the 4000×2250 original) |
+| commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm | MediaWiki file page | public | routed to discovery (d0bc80e) → 1080p WebM transcode, native | 1920×1080 · first 2 s still buffering (+0 s) · seek 30 s → 33.1 s 4 s later | 4K original | **PASS** on b78042f (before d0bc80e, taken as a direct file and failed with FINAL_CDN_CORS_BLOCKED) |
 | ted.com/talks/sir_ken_robinson_do_schools_kill_creativity | JSON-LD VideoObject | public, signed query | JSON-LD contentUrl → HLS, hls.js | 640×480 · +2.0 s · 33.9 s | same URL | **PASS** |
 | framatube.org/w/kkGMgK9ZtnKfYAgnEtQxbv (PeerTube) | JSON-LD VideoObject | public | JSON-LD → HLS, hls.js | 1920×1080 · +2.0 s · 33.8 s | same URL | **PASS** |
 | mixkit.co/free-stock-video/waves-in-the-ocean-1164/ | JSON-LD VideoObject | public | JSON-LD → MP4, native | 720×1280 · +2.0 s · 14.1 s | same URL | **PASS** |
