@@ -44,3 +44,30 @@ fi
   -f lavfi -i sine=frequency=440:sample_rate=48000 -t 15 -c:v libx264 \
   -preset ultrafast -g 25 -pix_fmt yuv420p -c:a ac3 -b:a 96k -shortest "$dir/wide.mkv"
 [ -f "$dir/clip.avi" ] || ffmpeg "${q[@]}" "${src[@]}" -c:v mpeg4 -c:a libmp3lame -shortest "$dir/clip.avi"
+# Web pages for page discovery (the video is found from the page's metadata, never pasted directly).
+mkdir -p "$dir/pages"
+cat > "$dir/pages/og.html" <<'HTML'
+<!doctype html><html><head><title>ignored</title>
+<meta property="og:title" content="Fixture Rocket &amp; Friends"><meta property="og:type" content="video.other">
+<meta property="og:image" content="/__test__/poster.jpg">
+<meta property="og:video" content="../clip.webm?sig=a1&amp;exp=9"><meta property="og:video:type" content="video/webm">
+</head><body><video autoplay muted loop src="../wide.mp4"></video><p>Article text</p></body></html>
+HTML
+cat > "$dir/pages/jsonld.html" <<'HTML'
+<!doctype html><html><head><title>HLS talk</title>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebPage"},{"@type":"VideoObject","name":"Fixture HLS Talk","duration":"PT1M30S","contentUrl":"/__test__/hls/index.m3u8"}]}</script>
+</head><body></body></html>
+HTML
+cat > "$dir/pages/multi.html" <<'HTML'
+<!doctype html><html><head><title>Two clips</title></head><body>
+<video controls src="/__test__/clip.webm"></video><video controls><source src="/__test__/clip.mp4" type="video/mp4"></video>
+</body></html>
+HTML
+cat > "$dir/pages/youtube.html" <<'HTML'
+<!doctype html><html><head><title>Blog</title>
+<meta property="og:video:url" content="https://www.youtube.com/embed/aqz-KE-bpKQ"><meta property="og:video:type" content="text/html">
+</head><body></body></html>
+HTML
+cat > "$dir/pages/none.html" <<'HTML'
+<!doctype html><html><head><title>No video here</title></head><body><img src="/x.jpg"></body></html>
+HTML

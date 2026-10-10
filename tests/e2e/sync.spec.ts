@@ -531,9 +531,9 @@ test("sources that can't be played directly say so", async ({ page }) => {
   await page.waitForURL(/\/room\//);
   const cant = "This source can't be played directly.";
 
-  // A web page, not media. Locally the server probes its own page; deployed, a public one.
+  // A web page with no video. Locally the server checks its own page; deployed, a public one.
   await paste(page, process.env.E2E_BASE_URL ? "https://example.com/" : "/");
-  await expect(page.getByTestId("source-error")).toHaveText(cant);
+  await expect(page.getByTestId("source-error")).toHaveText(/doesn't contain a video/);
   await expect(page.getByTestId("media-label")).toHaveText("Nothing loaded.");
 
   for (const url of ["ftp://example.com/movie.mp4", "https://www.youtube.com/playlist?list=PL0123456789"]) {
@@ -546,6 +546,74 @@ test("sources that can't be played directly say so", async ({ page }) => {
   await expect(page.getByTestId("media-error")).toHaveText(cant, { timeout: 10_000 });
   await paste(page, "https://vimeo.com/999999999");
   await expect(page.getByTestId("media-error")).toHaveText(cant, { timeout: 10_000 });
+});
+
+test.describe("web pages: Paste & Play finds the video on the page", () => {
+  test.skip(!!process.env.E2E_BASE_URL, "needs the local page fixtures (the server fetches them itself)");
+
+  test("Open Graph video plays for host and guest, with the page title and the signed query intact", async ({ browser, context }) => {
+    const host = await context.newPage();
+    await host.goto("/");
+    await host.getByTestId("create-room").click();
+    await host.waitForURL(/\/room\//);
+    await paste(host, "/__test__/pages/og.html");
+    await expect(host.getByTestId("media-label")).toHaveText("Now: Fixture Rocket & Friends");
+    await expect.poll(async () => (await info(host)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+    // The muted background loop on the page was not mistaken for the content.
+    const src = await host.evaluate(() => document.querySelector<HTMLVideoElement>('[data-testid="video"]')?.currentSrc ?? "");
+    expect(src).toMatch(/\/__test__\/clip\.webm\?sig=a1&exp=9$/);
+
+    const guest = await guestPage(browser, context);
+    await guest.goto(new URL(host.url()).pathname);
+    await expect(guest.getByTestId("media-label")).toHaveText("Now: Fixture Rocket & Friends");
+    await expect(host.getByTestId("participant-guest")).toContainText("Ready", { timeout: 20_000 });
+    await act(host, "play");
+    await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
+    await act(host, { seek: 30 });
+    await expect.poll(async () => Math.abs(await gap(host, guest)), { timeout: 8000 }).toBeLessThan(0.5);
+  });
+
+  test("JSON-LD VideoObject routes to the HLS player", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("create-room").click();
+    await page.waitForURL(/\/room\//);
+    await paste(page, "/__test__/pages/jsonld.html");
+    await expect(page.getByTestId("stage")).toHaveAttribute("data-kind", "hls");
+    await expect(page.getByTestId("media-label")).toHaveText("Now: Fixture HLS Talk");
+    await expect.poll(async () => (await info(page)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+  });
+
+  test("several videos: the host picks one; nothing plays before that", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("create-room").click();
+    await page.waitForURL(/\/room\//);
+    await paste(page, "/__test__/pages/multi.html");
+    await expect(page.getByTestId("source-option")).toHaveCount(2);
+    await expect(page.getByTestId("media-label")).toHaveText("Nothing loaded.");
+    await page.getByTestId("source-option").nth(1).click();
+    await expect(page.getByTestId("source-picker")).toHaveCount(0);
+    await expect.poll(async () => (await info(page)).ready, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+    const src = await page.evaluate(() => document.querySelector<HTMLVideoElement>('[data-testid="video"]')?.currentSrc ?? "");
+    expect(src).toMatch(/clip\.mp4$/);
+  });
+
+  test("a page whose player is YouTube opens the official YouTube player", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("create-room").click();
+    await page.waitForURL(/\/room\//);
+    await paste(page, "/__test__/pages/youtube.html");
+    await expect(page.getByTestId("stage")).toHaveAttribute("data-kind", "youtube");
+  });
+
+  test("a page without a video says so", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("create-room").click();
+    await page.waitForURL(/\/room\//);
+    await paste(page, "/__test__/pages/none.html");
+    await expect(page.getByTestId("source-error")).toHaveText(/doesn't contain a video/);
+    await paste(page, "https://www.dailymotion.com/video/x8j5tqk");
+    await expect(page.getByTestId("source-error")).toHaveText(/Dailymotion/);
+  });
 });
 
 const SRT = [
@@ -856,17 +924,24 @@ for (const clip of [CLIP, "/__test__/clip.mkv"]) {
     await expect(controls).toHaveCSS("opacity", "1");
 
     // Host controls drive the room: pause, seek past the first cue, play.
-    await controls.getByRole("button", { name: "Pause" }).tap();
+    // While playing the controls fade 3 s after a tap, and a tap on faded controls only brings them
+    // back (as on a phone). A slow runner can pass 3 s here, so reveal first if they faded.
+    const press = (name: string) =>
+      expect(async () => {
+        if ((await controls.getAttribute("data-visible")) === null) await host.getByTestId("frame").tap();
+        await controls.getByRole("button", { name }).tap({ timeout: 1000 });
+      }).toPass({ timeout: 10_000 });
+    await press("Pause");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(true);
     const seek = controls.getByRole("slider", { name: "Seek" });
     await seek.fill("12");
     await seek.blur();
     await expect.poll(async () => (await info(guest)).t, { timeout: 10_000 }).toBeGreaterThan(11.5);
     await expect(host.getByTestId("subtitle-text")).toHaveText("Second line", { timeout: 10_000 });
-    await controls.getByRole("button", { name: "Play" }).tap();
+    await press("Play");
     await expect.poll(async () => (await info(guest)).paused, { timeout: 10_000 }).toBe(false);
     // Mute is local only.
-    await controls.getByRole("button", { name: "Mute" }).tap();
+    await press("Mute");
     await expect(controls.getByRole("button", { name: "Unmute" })).toBeVisible();
     await expect(host.getByTestId("fullscreen")).toHaveText("Exit fullscreen");
 

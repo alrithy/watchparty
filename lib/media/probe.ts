@@ -1,6 +1,8 @@
 import "server-only";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { isPublicAddress } from "@/lib/net/address";
+import { pinnedFetchImpl } from "@/lib/net/pinned-fetch";
 import type { SourceKind } from "@/lib/room/types";
 
 /**
@@ -64,30 +66,25 @@ function classifyHeaders(contentType: string | null, disposition: string | null,
   return { result: "unknown" };
 }
 
-/** True for loopback, private, link-local, CGNAT, multicast and other non-public addresses. */
+/**
+ * True for loopback, private, link-local, CGNAT, multicast, documentation,
+ * NAT64/6to4/Teredo and other non-public addresses (see lib/net/address.ts).
+ */
 export function isPrivateAddress(ip: string): boolean {
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    return (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 192 && b === 0) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      a >= 224
-    );
-  }
-  const v6 = ip.toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
-  if (mapped) return isPrivateAddress(mapped[1]);
-  return v6 === "::" || v6 === "::1" || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6) || v6.startsWith("ff");
+  return !isPublicAddress(ip);
 }
 
-export type ProbeOptions = { fetchImpl?: typeof fetch; resolve?: (host: string) => Promise<string[]>; allowPrivate?: boolean };
+export type ProbeOptions = {
+  /** Tests inject a scripted fetch. The default pins each connection to an address that passed the guard. */
+  fetchImpl?: typeof fetch;
+  resolve?: (host: string) => Promise<string[]>;
+  allowPrivate?: boolean;
+};
+
+/** The fetch for user-supplied URLs: DNS-pinned, so a rebinding host can't swap in a private address. */
+export function fetcherFor(opts: ProbeOptions): typeof fetch {
+  return opts.fetchImpl ?? pinnedFetchImpl(!!opts.allowPrivate);
+}
 
 const defaultResolve = async (host: string) => (await lookup(host, { all: true })).map((a) => a.address);
 
@@ -131,7 +128,7 @@ async function request(start: URL, method: "HEAD" | "GET", opts: ProbeOptions, s
   let url = start;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (!(await assertPublic(url, opts))) return null;
-    const res = await (opts.fetchImpl ?? fetch)(url, {
+    const res = await fetcherFor(opts)(url, {
       method,
       redirect: "manual",
       signal,

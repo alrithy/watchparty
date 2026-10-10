@@ -14,6 +14,12 @@ export type MediaSource = {
   hash?: string;
   /** Media type the server reported for an extensionless link (e.g. "video/x-matroska"); a routing hint. */
   mime?: string;
+  /**
+   * Set when the host pasted a web page and Watch Party found this video on it:
+   * the page's host and how the video was found (display and diagnostics only;
+   * no path or query, which can carry tokens). `url` is then the video itself.
+   */
+  page?: { host: string; via: "jsonld" | "opengraph" | "twitter" | "video-tag" | "oembed" | "iframe" };
 };
 
 /** Authoritative playback state, owned by the host in V1. */

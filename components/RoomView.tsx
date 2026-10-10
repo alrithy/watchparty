@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { PresenceInfo, Role } from "@/lib/room/types";
 import { useWatchParty } from "@/components/useWatchParty";
 import { prepareSource } from "@/lib/media/prepare";
+import type { DiscoveredOption } from "@/lib/media/discover/types";
 import { SubtitleControls, SubtitleOverlay } from "@/components/Subtitles";
 import { useFullscreen } from "@/components/useFullscreen";
 import { useNativeSubtitles } from "@/components/useNativeSubtitles";
@@ -224,14 +225,17 @@ function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["load
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [options, setOptions] = useState<DiscoveredOption[] | null>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
     setError(null);
+    setOptions(null);
     const result = await prepareSource(url);
     setBusy(false);
     if ("error" in result) setError(result.error);
+    else if ("choose" in result) setOptions(result.choose);
     else onLoad(result.source);
   };
   return (
@@ -254,8 +258,64 @@ function SourceForm({ onLoad }: { onLoad: ReturnType<typeof useWatchParty>["load
         </button>
       </div>
       {error && <p className="text-sm text-red-300" data-testid="source-error">{error}</p>}
+      {options && (
+        <SourcePicker
+          options={options}
+          onPick={(o) => {
+            setOptions(null);
+            onLoad(o.source);
+          }}
+        />
+      )}
     </form>
   );
+}
+
+const VIA_LABEL: Record<DiscoveredOption["via"], string> = {
+  jsonld: "page metadata",
+  opengraph: "page preview",
+  twitter: "page preview",
+  "video-tag": "video on the page",
+  oembed: "provider",
+  iframe: "embedded player",
+};
+
+/** The few videos found on one page; the host picks which one the room watches. */
+function SourcePicker({ options, onPick }: { options: DiscoveredOption[]; onPick: (o: DiscoveredOption) => void }) {
+  return (
+    <div className="space-y-1" data-testid="source-picker">
+      <p className="text-sm text-zinc-300">
+        {options.length === 1 ? "Found this video on the page. Play it?" : "This page has several videos. Which one?"}
+      </p>
+      <ul className="space-y-1">
+        {options.map((o, i) => (
+          <li key={`${i}:${o.source.kind}:${o.source.videoId ?? ""}`}>
+            <button
+              type="button"
+              data-testid="source-option"
+              onClick={() => onPick(o)}
+              className="w-full truncate rounded-md border border-zinc-700 px-3 py-2 text-left text-sm hover:border-zinc-400"
+            >
+              <span className="text-zinc-100">{o.title ?? o.source.label}</span>
+              <span className="ml-2 text-zinc-500">
+                {o.source.kind === "youtube" || o.source.kind === "vimeo" ? o.source.kind : o.source.kind.toUpperCase()} · {VIA_LABEL[o.via]}
+                {o.duration ? ` · ${formatDuration(o.duration)}` : ""}
+                {o.verified ? "" : " · unconfirmed"}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function formatDuration(seconds: number): string {
+  const s = Math.round(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${r}` : `${m}:${r}`;
 }
 
 /** Local controls under the player: guests get volume (the host uses the player's own), everyone gets fullscreen. */
