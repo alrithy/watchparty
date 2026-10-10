@@ -7,6 +7,7 @@ import { refineStreamUrl, type Refinement } from "@/lib/media/refine";
 import { classifyFailure, isTerminal } from "@/lib/media/errors";
 import type { DiagnosticsSession } from "@/lib/media/diagnostics";
 import { safeHost } from "@/lib/media/diagnostics";
+import { reachSummary, verdict, worthChecking, type Reachability } from "@/lib/media/reachability";
 import type { Engine as AnyEngine } from "@/lib/media/route";
 
 /** Engines this player can switch between (the provider iframes have their own adapters). */
@@ -25,7 +26,7 @@ export function shouldFallBack(engine: Engine, message: string, kind: SourceKind
   if (engine === "native") {
     // Safari's HLS player failed to decode, to load, or to start at all: hls.js fetches and
     // retries on its own (it needs CORS, which Safari doesn't), so it gets one try.
-    if (kind === "hls") return code === "FORMAT_UNSUPPORTED" || code === "NETWORK_ERROR" || code === "NETWORK_TIMEOUT";
+    if (kind === "hls") return code === "FORMAT_UNSUPPORTED" || code === "NETWORK_ERROR" || code === "STREAM_START_TIMEOUT";
     // A file <video> can't decode (MEDIA_ERR_SRC_NOT_SUPPORTED / MEDIA_ERR_DECODE / no video track).
     // A network error from <video> would fail the same way on Movi.
     return message.startsWith(INCOMPATIBLE_MESSAGE);
@@ -52,6 +53,12 @@ export type FallbackOptions = {
   session?: DiagnosticsSession;
   /** Override of NATIVE_HLS_START_TIMEOUT_MS (tests). */
   startTimeoutMs?: number;
+  /**
+   * Run once when every engine has failed, before the viewer is told why: whether this
+   * device (and Watch Party's server) can reach the link at all. Without it the
+   * engines' own sentence is shown as is.
+   */
+  check?: (url: string) => Promise<Reachability>;
 };
 
 /**
@@ -92,6 +99,9 @@ export class FallbackPlayer implements PlayerAdapter {
   private refined = false;
   /** Why the last attempt failed, when it has an internal name (e.g. FINAL_CDN_CORS_BLOCKED). */
   private reason: string | null = null;
+  private readonly check: FallbackOptions["check"];
+  /** The sentence the reachability check settled on, replacing the engines' one. */
+  private checkedMessage: string | null = null;
 
   constructor(
     private readonly container: HTMLElement,
@@ -103,6 +113,7 @@ export class FallbackPlayer implements PlayerAdapter {
     this.kind = options.kind ?? "file";
     this.session = options.session ?? null;
     this.startTimeoutMs = options.startTimeoutMs ?? NATIVE_HLS_START_TIMEOUT_MS;
+    this.check = options.check;
     this.use(order[0]);
   }
 
@@ -186,8 +197,7 @@ export class FallbackPlayer implements PlayerAdapter {
       }
       const final = this.firstFailure ? finalMessage(this.firstFailure, message) : message;
       const blamed = final === message ? this.engine : (this.firstFailure?.engine ?? this.engine);
-      this.session?.failed(classifyFailure(blamed, final, this.reason), final, true);
-      this.events.emit("error", { message: final });
+      this.fail(classifyFailure(blamed, final, this.reason), final);
       return;
     }
     if (e === "playing") this.session?.playing(this.inner.mediaInfo?.());
@@ -209,6 +219,38 @@ export class FallbackPlayer implements PlayerAdapter {
     if (e === "play") this.wantPlay = true;
     if (e === "pause") this.wantPlay = false;
     this.events.emit(e, detail);
+  }
+
+  /**
+   * No engine is left. When the engines' reason could be the network, check reachability
+   * first (one browser request pair, one server header request) and tell the viewer what
+   * that showed; otherwise, or if the check fails, the engines' sentence stands.
+   */
+  private fail(code: ReturnType<typeof classifyFailure>, message: string) {
+    const source = this.source;
+    const report = (c: typeof code, m: string) => {
+      this.session?.failed(c, m, true);
+      this.events.emit("error", { message: m });
+    };
+    if (!this.check || !source || !worthChecking(code)) return report(code, message);
+    // Drop the failed adapter's late events while the check runs.
+    this.switching = true;
+    void this.check(source.url)
+      .then(
+        (r) => {
+          if (this.destroyed || source !== this.source) return;
+          this.session?.reached(reachSummary(r));
+          const v = verdict(code, r, safeHost(source.url));
+          if (v.message) this.checkedMessage = v.message;
+          this.switching = false;
+          report(v.code, v.message ?? message);
+        },
+        () => {
+          if (this.destroyed || source !== this.source) return;
+          this.switching = false;
+          report(code, message);
+        },
+      );
   }
 
   /** Replaces the current adapter, carrying position and play state over. `source` is local to this device. */
@@ -254,6 +296,7 @@ export class FallbackPlayer implements PlayerAdapter {
     this.source = source;
     this.refined = false;
     this.reason = null;
+    this.checkedMessage = null;
     this.inner.load(source);
     this.armStartTimer();
   }
@@ -296,6 +339,7 @@ export class FallbackPlayer implements PlayerAdapter {
   error() {
     if (this.switching) return null;
     const e = this.inner.error();
+    if (e && this.checkedMessage) return this.checkedMessage;
     return e && this.firstFailure ? finalMessage(this.firstFailure, e) : e;
   }
   setRate(rate: number) {

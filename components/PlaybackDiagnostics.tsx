@@ -70,6 +70,11 @@ export function PlaybackDiagnostics() {
             {report.error.code}: {report.error.message}
           </p>
         )}
+        {report.reachability && (
+          <p className="font-mono text-xs text-zinc-400" data-testid="diag-reachability">
+            This device: {report.reachability.browser} · Watch Party server: {report.reachability.server}
+          </p>
+        )}
         <ol className="space-y-1" data-testid="diag-attempts">
           {report.attempts.map((a, i) => (
             <AttemptRow key={i} a={a} />

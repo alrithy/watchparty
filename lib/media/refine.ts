@@ -1,4 +1,5 @@
 import { moviErrorMessage } from "@/lib/player/movi";
+import { browserReach } from "@/lib/media/reachability";
 
 /** Internal reason when the file's final server itself refuses cross-origin reads. */
 export const FINAL_CDN_CORS_BLOCKED = "FINAL_CDN_CORS_BLOCKED";
@@ -27,22 +28,14 @@ export function finalCdnBlockedMessage(host: string, unlocker: boolean): string 
     : `The video's server (${host}) blocks browser streaming of this format. On desktop Chrome, Edge or Brave, the WatchParty CORS Unlocker extension fixes this; phone browsers can't play this link.`;
 }
 
-/** Whether this page may read `url` cross-origin with a Range request, as Movi does. */
+/**
+ * Whether this page may read `url` cross-origin with a Range request, as Movi does.
+ * "blocked" only when the server did answer this device (so CORS is the problem);
+ * a host this device can't reach at all is an "error", never a CORS claim.
+ */
 export async function browserCanRead(url: string): Promise<"ok" | "blocked" | "error"> {
-  try {
-    const res = await fetch(url, {
-      headers: { Range: "bytes=0-0" },
-      mode: "cors",
-      credentials: "omit",
-      cache: "no-store",
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    });
-    void res.body?.cancel().catch(() => {});
-    return res.ok ? "ok" : "error";
-  } catch (e) {
-    // A CORS refusal surfaces as a TypeError with no response.
-    return e instanceof TypeError ? "blocked" : "error";
-  }
+  const r = await browserReach(url, PROBE_TIMEOUT_MS);
+  return r.result === "readable" ? "ok" : r.result === "answered" ? "blocked" : "error";
 }
 
 async function resolveOnServer(url: string): Promise<Resolved | null> {

@@ -247,6 +247,28 @@ test("unsupported sources show a clear compatibility error", async ({ page }) =>
   await page.getByTestId("load-source").click();
   // Both decoders get to try first (the fallback one loads on demand).
   await expect(page.getByTestId("media-error")).toHaveText(/This source is not browser compatible\./, { timeout: 20_000 });
+  // This device read the bytes, so the decoders' verdict is confirmed.
+  await expect(page.getByTestId("diag-error")).toContainText("CODEC_UNSUPPORTED");
+});
+
+test("a host this device can't connect to is reported as the connection, not the format", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("create-room").click();
+  await page.waitForURL(/\/room\//);
+  // Like a network that can't reach a CDN while Watch Party's server can: the browser's
+  // requests to this link fail to connect, the server's header check reaches the real file.
+  const link = new URL("/__test__/clip.mp4?sig=SIGNED", page.url()).toString();
+  await page.route((u) => u.href === link, (route) => route.abort("connectionrefused"));
+  await page.getByTestId("source-url").fill(link);
+  await page.getByTestId("load-source").click();
+  const error = page.getByTestId("media-error");
+  await expect(error).toHaveText(/couldn't be reached from this device, but the same link answered Watch Party's server/, { timeout: 30_000 });
+  await expect(error).not.toHaveText(/compatible/);
+  await expect(page.getByTestId("diag-error")).toContainText("NETWORK_UNREACHABLE");
+  await expect(page.getByTestId("diag-reachability")).toHaveText(/This device: unreachable · Watch Party server: ok 20[06]/);
+  // The copied report keeps the host, never the signed query.
+  const report = await page.getByTestId("playback-diagnostics").textContent();
+  expect(report).not.toContain("SIGNED");
 });
 
 test("guest blocked by autoplay policy gets a join button", async ({ context }) => {
