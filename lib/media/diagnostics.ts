@@ -32,6 +32,10 @@ export type PlaybackReport = {
   attempts: Attempt[];
   /** Why playback ended in failure on this device, including when no engine could even start. */
   error?: { code: PlaybackErrorCode; message: string };
+  /** After every engine failed: could this device, and Watch Party's server, reach the host? Outcomes and statuses only. */
+  reachability?: { browser: string; server: string };
+  /** Browser and OS version (e.g. iOS and WebKit), as the browser reports them to every site. */
+  userAgent: string | null;
   capabilities: Capabilities;
 };
 
@@ -97,6 +101,7 @@ class DiagnosticsStore {
       },
       plan: { engines: [...plan.engines], reasons: [...plan.reasons] },
       attempts: [],
+      userAgent: typeof navigator === "undefined" ? null : navigator.userAgent.slice(0, 200),
       capabilities,
     };
     this.publish();
@@ -125,7 +130,7 @@ class DiagnosticsStore {
 
   private publish() {
     const d = this.draft;
-    this.published = d ? { ...d, plan: { ...d.plan }, attempts: d.attempts.map((a) => ({ ...a })), ...(d.error ? { error: { ...d.error } } : {}) } : null;
+    this.published = d ? { ...d, plan: { ...d.plan }, attempts: d.attempts.map((a) => ({ ...a })), ...(d.error ? { error: { ...d.error } } : {}), ...(d.reachability ? { reachability: { ...d.reachability } } : {}) } : null;
     for (const l of this.listeners) l();
   }
 }
@@ -172,6 +177,10 @@ export class DiagnosticsSession {
     });
   }
 
+
+  reached(summary: { browser: string; server: string }) {
+    this.store.update(this.id, (r) => void (r.reachability = summary));
+  }
 
   resolved(finalHost: string, retried: boolean) {
     this.edit((a) => {

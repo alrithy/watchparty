@@ -4,6 +4,7 @@ import { capabilities as detect, type Capabilities } from "@/lib/media/capabilit
 import { planPlayback, routingFromLocation, type Routing } from "@/lib/media/route";
 import { playbackDiagnostics } from "@/lib/media/diagnostics";
 import { classifyFailure } from "@/lib/media/errors";
+import { checkReachability } from "@/lib/media/reachability";
 import { FallbackPlayer } from "@/lib/player/fallback";
 import { MediaElementAdapter, type PlayerOptions } from "@/lib/player/media-element";
 import { UnsupportedPlayer } from "@/lib/player/unsupported";
@@ -43,5 +44,5 @@ export function createPlayer(
     return p;
   }
   const engines = plan.engines.filter((e): e is Exclude<typeof e, "youtube" | "vimeo"> => e !== "youtube" && e !== "vimeo");
-  return new FallbackPlayer(container, opts, engines, undefined, { kind: source.kind, session });
+  return new FallbackPlayer(container, opts, engines, undefined, { kind: source.kind, session, check: checkReachability });
 }

@@ -243,7 +243,7 @@ Engine switching rules in Phase 1 (one switch per source, never a loop):
 | --- | --- |
 | Safari HLS: can't decode (`MEDIA_ERR_SRC_NOT_SUPPORTED` / `DECODE`) | yes, hls.js |
 | Safari HLS: `MEDIA_ERR_NETWORK` | yes, hls.js (it retries segments itself) |
-| Safari HLS: no metadata within 15 s and no error | yes, hls.js (code NETWORK_TIMEOUT) |
+| Safari HLS: no metadata within 15 s and no error | yes, hls.js (code STREAM_START_TIMEOUT) |
 | Safari HLS: stalls after it started | no (ordinary buffering; sync handles it) |
 | `<video>` file: can't decode | yes, Movi |
 | `<video>` file: network error | no (Movi would hit the same server) |

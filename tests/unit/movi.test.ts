@@ -144,12 +144,25 @@ describe("Movi error classification", () => {
     ["Authentication required.", "denied"],
     ["Unsupported codec: vc1", "codec"],
     ["Invalid data found when processing input", "codec"],
+    ["Failed to open media: 1", "codec"],
+    // Safari's and Firefox's words for a fetch that never got an answer.
+    ["Load failed", "range"],
+    ["NetworkError when attempting to fetch resource.", "range"],
+    ["HTTP 502", "server"],
+    ["Timeout after 30000ms", "timeout"],
+    ["Stream failed after 3 restart attempts", "timeout"],
+    // Unrecognised text stays unknown: it is never reported as an incompatible format.
+    ["Content-Length missing", "unknown"],
+    ["Source closed", "unknown"],
+    ["", "unknown"],
   ] as const)("%s → %s", (msg, kind) => {
     expect(classifyMoviError(msg)).toBe(kind);
   });
 
   it("never echoes the URL back to the viewer", () => {
-    for (const k of ["range", "missing", "denied", "codec"] as const) expect(moviErrorMessage(k)).not.toMatch(/https?:/);
+    for (const k of ["range", "missing", "denied", "server", "timeout", "codec", "unknown"] as const) expect(moviErrorMessage(k)).not.toMatch(/https?:/);
+    expect(moviErrorMessage("server", "HTTP 503")).toBe("The video's server answered with an error (HTTP 503).");
+    expect(moviErrorMessage("unknown")).not.toMatch(/compatible/);
   });
 });
 
@@ -345,7 +358,7 @@ describe("redirect resolver retry", () => {
   });
 });
 
-const { playbackDiagnostics } = await import("@/lib/media/diagnostics");
+const { playbackDiagnostics, reportText } = await import("@/lib/media/diagnostics");
 const { NO_CAPABILITIES } = await import("@/lib/media/capabilities");
 
 describe("routed engines", () => {
@@ -409,7 +422,7 @@ describe("routed engines", () => {
     p.load(hls);
     await new Promise((r) => setTimeout(r, 20));
     expect(FakeAdapter.made).toHaveLength(2);
-    expect(playbackDiagnostics.snapshot()!.attempts[0]).toMatchObject({ engine: "native", code: "NETWORK_TIMEOUT" });
+    expect(playbackDiagnostics.snapshot()!.attempts[0]).toMatchObject({ engine: "native", code: "STREAM_START_TIMEOUT" });
     // hls.js is the last engine: a slow start there just keeps waiting.
     await new Promise((r) => setTimeout(r, 20));
     expect(FakeAdapter.made).toHaveLength(2);
@@ -456,5 +469,84 @@ describe("routed engines", () => {
     await tick();
     expect(FakeAdapter.made).toHaveLength(1);
     expect(errors).toEqual([INCOMPATIBLE_MESSAGE]);
+  });
+});
+
+describe("after every engine failed, reachability decides what the viewer is told", () => {
+  const mkv = file("https://cdn.example/d/Movie.mkv?token=SECRET", "Movie.mkv (cdn.example)");
+  const unreachable = { browser: { result: "unreachable" as const }, server: { result: "ok" as const, status: 206, cors: "allowed" as const } };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it("iPhone: <video> can't load it and Movi's decoder 'fails', but no answer reached this device", async () => {
+    FakeAdapter.made = [];
+    const session = playbackDiagnostics.begin(mkv, { engines: ["native", "movi"], reasons: [] }, NO_CAPABILITIES, "smart");
+    const check = vi.fn(async () => unreachable);
+    const errors: string[] = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "movi"], undefined, { session, check });
+    p.on((e, d) => void (e === "error" && errors.push(d!.message!)));
+    p.load(mkv);
+    FakeAdapter.made[0].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    FakeAdapter.made[1].emit("error", { message: MOVI_INCOMPATIBLE_MESSAGE });
+    expect(errors).toEqual([]);
+    await tick();
+    expect(check).toHaveBeenCalledOnce();
+    expect(check).toHaveBeenCalledWith(mkv.url);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/couldn't be reached from this device, but the same link answered Watch Party's server/);
+    expect(errors[0]).not.toMatch(/compatible|censor|region|countr|ISP|block/i);
+    const r = playbackDiagnostics.snapshot()!;
+    expect(r.error?.code).toBe("NETWORK_UNREACHABLE");
+    expect(r.reachability).toEqual({ browser: "unreachable", server: "ok 206 cors:allowed" });
+    expect(reportText(r)).not.toMatch(/SECRET|Movie|\/d\//);
+    p.destroy();
+  });
+
+  it("keeps the decoder's sentence, as confirmed, when this device could read the bytes", async () => {
+    FakeAdapter.made = [];
+    const session = playbackDiagnostics.begin(mkv, { engines: ["native", "movi"], reasons: [] }, NO_CAPABILITIES, "smart");
+    const check = async () => ({ browser: { result: "readable" as const, status: 206 }, server: { result: "ok" as const, status: 206, cors: "allowed" as const } });
+    const errors: string[] = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native", "movi"], undefined, { session, check });
+    p.on((e, d) => void (e === "error" && errors.push(d!.message!)));
+    p.load(mkv);
+    FakeAdapter.made[0].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    await tick();
+    FakeAdapter.made[1].emit("error", { message: MOVI_INCOMPATIBLE_MESSAGE });
+    await tick();
+    expect(errors).toEqual([MOVI_INCOMPATIBLE_MESSAGE]);
+    expect(playbackDiagnostics.snapshot()!.error?.code).toBe("CODEC_UNSUPPORTED");
+    p.destroy();
+  });
+
+  it("doesn't check DRM, and drops a check that returns after the source changed", async () => {
+    FakeAdapter.made = [];
+    let resolve!: (r: typeof unreachable) => void;
+    const check = vi.fn(() => new Promise<typeof unreachable>((r) => (resolve = r)));
+    const errors: string[] = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native"], undefined, { check });
+    p.on((e, d) => void (e === "error" && errors.push(d!.message!)));
+    p.load(mkv);
+    FakeAdapter.made[0].emit("error", { message: DRM_MESSAGE });
+    expect(check).not.toHaveBeenCalled();
+    expect(errors).toEqual([DRM_MESSAGE]);
+    p.load(file("https://cdn.example/other.mp4"));
+    FakeAdapter.made[0].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    p.load(file("https://cdn.example/third.mp4"));
+    resolve(unreachable);
+    await tick();
+    expect(errors).toEqual([DRM_MESSAGE]);
+    p.destroy();
+  });
+
+  it("without a check (tests, old callers) the engines' sentence is shown at once", () => {
+    FakeAdapter.made = [];
+    const errors: string[] = [];
+    const p = new FallbackPlayer({} as HTMLElement, { controls: false }, ["native"]);
+    p.on((e, d) => void (e === "error" && errors.push(d!.message!)));
+    p.load(mkv);
+    FakeAdapter.made[0].emit("error", { message: INCOMPATIBLE_MESSAGE });
+    expect(errors).toEqual([INCOMPATIBLE_MESSAGE]);
+    p.destroy();
   });
 });

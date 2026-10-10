@@ -13,22 +13,30 @@ export const MOVI_CACHE_MB = 128;
 export const RANGE_BLOCKED_MESSAGE = "This link blocks browser byte-range access, so this format can't be streamed here.";
 export const MOVI_INCOMPATIBLE_MESSAGE = `${INCOMPATIBLE_MESSAGE} Neither the browser nor the fallback decoder could play it.`;
 
-export type MoviFailure = "range" | "missing" | "denied" | "codec";
+export const MOVI_TIMEOUT_MESSAGE = "The video's server stopped sending data in time.";
+export const MOVI_UNKNOWN_MESSAGE = "The fallback decoder couldn't play this video and didn't say why.";
+
+export type MoviFailure = "range" | "missing" | "denied" | "server" | "timeout" | "codec" | "unknown";
 
 /**
  * Sorts Movi's error text (from its HttpSource and demuxer) into what the viewer can act on.
  * CORS and missing Range support look alike from the page, and both need a
  * different link (or, later, a browser helper), so they share one message.
+ * Only demuxer and decoder errors count as the format: anything unrecognised stays
+ * unknown, so a network failure is never reported as an incompatible video.
  */
 export function classifyMoviError(message: string): MoviFailure {
   const m = message.toLowerCase();
-  if (/cors|failed to fetch|range request|byte-range|linear/.test(m)) return "range";
+  if (/cors|failed to fetch|load failed|networkerror|range request|byte-range|linear/.test(m)) return "range";
   if (/not found|\b404\b|\b410\b/.test(m)) return "missing";
   if (/access denied|authentication|\b401\b|\b403\b/.test(m)) return "denied";
-  return "codec";
+  if (/\bhttp [45]\d\d\b/.test(m)) return "server";
+  if (/timeout|timed out|restart attempts|empty response body/.test(m)) return "timeout";
+  if (/demux|decod|codec|open media|unsupported|not supported|invalid data|webcodecs|no (video|audio) stream/.test(m)) return "codec";
+  return "unknown";
 }
 
-export function moviErrorMessage(kind: MoviFailure): string {
+export function moviErrorMessage(kind: MoviFailure, detail = ""): string {
   switch (kind) {
     case "range":
       return RANGE_BLOCKED_MESSAGE;
@@ -36,9 +44,22 @@ export function moviErrorMessage(kind: MoviFailure): string {
       return "The video link wasn't found. It may have expired.";
     case "denied":
       return "The video link refused access. It may have expired.";
-    default:
+    case "server": {
+      const status = /\bhttp ([45]\d\d)\b/i.exec(detail)?.[1];
+      return `The video's server answered with an error (HTTP ${status ?? "error"}).`;
+    }
+    case "timeout":
+      return MOVI_TIMEOUT_MESSAGE;
+    case "codec":
       return MOVI_INCOMPATIBLE_MESSAGE;
+    default:
+      return MOVI_UNKNOWN_MESSAGE;
   }
+}
+
+/** Movi's error text → the viewer's sentence. */
+export function moviFailure(message: string): string {
+  return moviErrorMessage(classifyMoviError(message), message);
 }
 
 /** Movi (FFmpeg WASM demux + WebCodecs) is ~11 MB, so it's fetched only when a video needs it. */
@@ -144,14 +165,14 @@ export class MoviPlayerAdapter implements PlayerAdapter {
         this.events.emit("pause");
         this.events.emit("ended");
       }),
-      player.on("error", (e) => this.fail(moviErrorMessage(classifyMoviError(e?.message ?? String(e))))),
+      player.on("error", (e) => this.fail(moviFailure(e?.message ?? String(e)))),
       // No Range support and too big to hold: forward-only playback can't follow the room.
       player.on("linearmode", () => this.fail(RANGE_BLOCKED_MESSAGE)),
     );
     try {
       await player.load();
     } catch (e) {
-      return this.fail(moviErrorMessage(classifyMoviError(e instanceof Error ? e.message : String(e))));
+      return this.fail(moviFailure(e instanceof Error ? e.message : String(e)));
     }
     if (this.destroyed || this.failure) return;
     player.setVolume(this.volume);
